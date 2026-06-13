@@ -22,10 +22,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,13 +46,21 @@ fun EntregasScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // Estado efêmero de UI: sobrevive à recomposição, não precisa sobreviver à rotação
+    // dropdown open/close is ephemeral — no need to survive rotation
     var expanded by remember { mutableStateOf(false) }
     var selectedCliente by remember { mutableStateOf("Todos") }
 
-    val entregasFiltradas = remember(state.entregas, selectedCliente) {
-        if (selectedCliente == "Todos") state.entregas
-        else state.entregas.filter { it.cliente == selectedCliente }
+    // search text must survive rotation: losing user input on config change is bad UX
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    val entregasFiltradas = remember(state.entregas, selectedCliente, searchQuery) {
+        state.entregas
+            .filter { if (selectedCliente == "Todos") true else it.cliente == selectedCliente }
+            .filter { entrega ->
+                if (searchQuery.isBlank()) true
+                else entrega.cliente.contains(searchQuery, ignoreCase = true)
+                    || entrega.endereco.contains(searchQuery, ignoreCase = true)
+            }
     }
 
     Scaffold(
@@ -72,6 +84,17 @@ fun EntregasScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Buscar por cliente ou endereço...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
             )
 
             Box(modifier = Modifier.fillMaxSize()) {
