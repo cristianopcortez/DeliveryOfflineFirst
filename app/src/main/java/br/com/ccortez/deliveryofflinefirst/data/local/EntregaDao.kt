@@ -13,4 +13,7 @@ interface EntregaDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun inserirTodas(entregas: List<EntregaEntity>)
+
+    @Query("UPDATE entrega SET status = 'Concluída', sincronizada = 0 WHERE id = :id")
+    suspend fun concluirEntrega(id: String)
 }

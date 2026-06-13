@@ -39,6 +39,13 @@ class EntregasViewModel @Inject constructor(
         }
     }
 
+    fun concluirEntrega(id: String) {
+        viewModelScope.launch {
+            repository.concluirEntrega(id)
+            // Room Flow emits automatically — StateFlow updates without manual setState
+        }
+    }
+
     private fun popularBancoSeVazio() {
         viewModelScope.launch {
             repository.inserirTodas(entregasSeed)

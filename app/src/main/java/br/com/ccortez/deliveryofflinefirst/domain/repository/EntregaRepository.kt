@@ -6,4 +6,5 @@ import kotlinx.coroutines.flow.Flow
 interface EntregaRepository {
     fun observarTodas(): Flow<List<Entrega>>
     suspend fun inserirTodas(entregas: List<Entrega>)
+    suspend fun concluirEntrega(id: String)
 }

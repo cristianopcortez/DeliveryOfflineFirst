@@ -16,6 +16,10 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         dao.inserirTodas(entregas.map { it.toEntity() })
     }
 
+    override suspend fun concluirEntrega(id: String) {
+        dao.concluirEntrega(id)
+    }
+
     private fun EntregaEntity.toEntrega() = Entrega(
         id = id,
         cliente = cliente,

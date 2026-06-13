@@ -22,10 +22,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +56,11 @@ fun EntregasScreen(
 
     // search text must survive rotation: losing user input on config change is bad UX
     var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    // derivedStateOf: recalculates only when sincronizada changes, not on every recomposition
+    val pendentesSync by remember {
+        derivedStateOf { state.entregas.count { !it.sincronizada } }
+    }
 
     val entregasFiltradas = remember(state.entregas, selectedCliente, searchQuery) {
         state.entregas
@@ -97,6 +106,15 @@ fun EntregasScreen(
                     .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
             )
 
+            if (pendentesSync > 0) {
+                PendenteSyncBadge(
+                    count = pendentesSync,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                )
+            }
+
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     state.isLoading -> {
@@ -119,12 +137,15 @@ fun EntregasScreen(
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(
-                                items = entregasFiltradas,
-                                key = { it.id }
-                            ) { entrega ->
-                                EntregaCard(entrega)
-                            }
+                        items(
+                            items = entregasFiltradas,
+                            key = { it.id }
+                        ) { entrega ->
+                            EntregaCard(
+                                entrega = entrega,
+                                onConcluir = { viewModel.concluirEntrega(entrega.id) }
+                            )
+                        }
                         }
                     }
                 }
@@ -176,7 +197,23 @@ private fun ClienteFilterDropdown(
 }
 
 @Composable
-private fun EntregaCard(entrega: Entrega) {
+private fun PendenteSyncBadge(count: Int, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            text = "⚠ $count pending sync",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@Composable
+private fun EntregaCard(entrega: Entrega, onConcluir: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -193,6 +230,18 @@ private fun EntregaCard(entrega: Entrega) {
                 text = "Status: ${entrega.status}",
                 style = MaterialTheme.typography.bodySmall
             )
+            if (entrega.status != "Concluída") {
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = onConcluir,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text("Concluir")
+                }
+            }
         }
     }
 }
