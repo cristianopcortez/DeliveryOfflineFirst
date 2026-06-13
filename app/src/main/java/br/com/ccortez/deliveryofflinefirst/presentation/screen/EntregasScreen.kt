@@ -22,19 +22,24 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -60,6 +65,14 @@ fun EntregasScreen(
     // derivedStateOf: recalculates only when sincronizada changes, not on every recomposition
     val pendentesSync by remember {
         derivedStateOf { state.entregas.count { !it.sincronizada } }
+    }
+
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+
+    // scroll position changes on every pixel — derivedStateOf fires only when the boolean flips
+    val showScrollToTop by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 0 }
     }
 
     val entregasFiltradas = remember(state.entregas, selectedCliente, searchQuery) {
@@ -134,18 +147,37 @@ fun EntregasScreen(
                     }
                     else -> {
                         LazyColumn(
+                            state = listState,
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                        items(
-                            items = entregasFiltradas,
-                            key = { it.id }
-                        ) { entrega ->
-                            EntregaCard(
-                                entrega = entrega,
-                                onConcluir = { viewModel.concluirEntrega(entrega.id) }
-                            )
+                            items(
+                                items = entregasFiltradas,
+                                key = { it.id }
+                            ) { entrega ->
+                                EntregaCard(
+                                    entrega = entrega,
+                                    onConcluir = { viewModel.concluirEntrega(entrega.id) }
+                                )
+                            }
                         }
+
+                        if (showScrollToTop) {
+                            FloatingActionButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(0)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(16.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowUp,
+                                    contentDescription = "Scroll to top"
+                                )
+                            }
                         }
                     }
                 }
