@@ -1,18 +1,22 @@
 package br.com.ccortez.deliveryofflinefirst.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
-class EntregasViewModel(private val repository: EntregaRepository) : ViewModel() {
+@HiltViewModel
+class EntregasViewModel @Inject constructor(
+    private val repository: EntregaRepository
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(EntregasUiState())
     val uiState: StateFlow<EntregasUiState> = _uiState.asStateFlow()
@@ -48,12 +52,5 @@ class EntregasViewModel(private val repository: EntregaRepository) : ViewModel()
             Entrega("3", "João Silva", "Rua do Comércio, 789", "Pendente"),
             Entrega("4", "Maria Souza", "Travessa A, 12", "Concluída", sincronizada = false),
         )
-
-        fun factory(repository: EntregaRepository): ViewModelProvider.Factory =
-            object : ViewModelProvider.Factory {
-                @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    EntregasViewModel(repository) as T
-            }
     }
 }
