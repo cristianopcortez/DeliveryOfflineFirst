@@ -7,20 +7,31 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [EntregaEntity::class], version = 2, exportSchema = true)
+@Database(entities = [EntregaEntity::class], version = 3, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun entregaDao(): EntregaDao
 
     companion object {
         @Volatile private var INSTANCE: AppDatabase? = null
 
-        // Adds horarioConclusao (nullable INTEGER) without touching existing rows.
-        // fallbackToDestructiveMigration() is intentionally absent — dropping user data
-        // (pending deliveries not yet synced) is not acceptable in a field app.
+        // v1 → v2: adds horarioConclusao (nullable INTEGER).
+        // Existing rows keep all data; new column defaults to NULL.
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
                     "ALTER TABLE entrega ADD COLUMN horarioConclusao INTEGER"
+                )
+            }
+        }
+
+        // v2 → v3: adds uuid (TEXT NOT NULL DEFAULT '').
+        // Empty string for existing rows is intentional — those are seed/mock deliveries
+        // that were never in a real outbox. New deliveries always receive a UUID
+        // from EntregaRepositoryImpl before being persisted.
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE entrega ADD COLUMN uuid TEXT NOT NULL DEFAULT ''"
                 )
             }
         }
@@ -32,7 +43,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "entregas.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { INSTANCE = it }
             }

@@ -6,6 +6,7 @@ import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 
 class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
 
@@ -20,9 +21,14 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         dao.concluirEntrega(id, timestamp = System.currentTimeMillis())
     }
 
-    override suspend fun marcarTodasSincronizadas() {
+    override suspend fun listarPendentes(): List<Entrega> =
+        dao.listarPendentes().map { it.toEntrega() }
+
+    override suspend fun marcarSincronizadaPorUuid(uuid: String) =
+        dao.marcarSincronizadaPorUuid(uuid)
+
+    override suspend fun marcarTodasSincronizadas() =
         dao.marcarTodasSincronizadas()
-    }
 
     private fun EntregaEntity.toEntrega() = Entrega(
         id = id,
@@ -30,7 +36,8 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         endereco = endereco,
         status = status,
         sincronizada = sincronizada,
-        horarioConclusao = horarioConclusao
+        horarioConclusao = horarioConclusao,
+        uuid = uuid
     )
 
     private fun Entrega.toEntity() = EntregaEntity(
@@ -39,6 +46,9 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         endereco = endereco,
         status = status,
         sincronizada = sincronizada,
-        horarioConclusao = horarioConclusao
+        horarioConclusao = horarioConclusao,
+        // UUID is generated here — repository is the "client" in the outbox pattern.
+        // The ViewModel and domain layer never need to know about UUID generation.
+        uuid = uuid.ifBlank { UUID.randomUUID().toString() }
     )
 }

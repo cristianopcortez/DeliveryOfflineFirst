@@ -46,7 +46,7 @@ deliveryofflinefirst/
 
 ---
 
-## Bloco A — Jetpack Compose & State Management
+## Jetpack Compose & State Management
 
 ### Immutable UiState + ViewModel as source of truth
 
@@ -173,7 +173,7 @@ The UI only reads state and emits events. The ViewModel is the only one that mut
 
 ---
 
-## Bloco B — Coroutines & Flow
+## Coroutines & Flow
 
 ### `StateFlow` vs `SharedFlow` — state vs one-shot events
 
@@ -190,7 +190,7 @@ val eventos = _eventos.asSharedFlow()
 
 ### `combine` + `debounce` + `distinctUntilChanged` + `flatMapLatest` + `stateIn`
 
-The reactive search pipeline in `EntregasViewModel` demonstrates five Bloco B operators in sequence:
+The reactive search pipeline in `EntregasViewModel` demonstrates five operators in sequence:
 
 ```kotlin
 val entregasFiltradas: StateFlow<List<Entrega>> = combine(
@@ -332,42 +332,42 @@ User actions          WorkManager drains when network is available
 
 ---
 
-## Bloco C — Persistência local (DataStore × Room)
+## Local Persistence (DataStore × Room)
 
-### Tabela 5.1 A — Decision table: what the app implements
+### Decision table: what the app implements
 
-| Tecnologia | Quando usar | Tipo de dado | Migração | Implementado neste app |
+| Technology | When to use | Data type | Migration | Implemented in this app |
 |---|---|---|---|---|
-| **DataStore Preferences** | Configurações simples (booleanos, strings soltas) | Primitivos com `Preferences.Key<T>` | Sem migração formal | — Não usado (substituído pela opção abaixo) |
-| **Typed DataStore** + `kotlinx.serialization` | Configurações estruturadas — objeto coeso, type-safe | `@Serializable data class` | Novos campos com `defaultValue` | ✅ `SettingsConfig` — `darkTheme` + `motoristaNome` |
-| **Room** | Dados operacionais com queries, filtros e relacionamentos | `@Entity` + `@Dao` + SQL | `Migration(from, to)` com SQL explícito | ✅ `EntregaEntity` — listagem + conclusão + sync flag |
+| **DataStore Preferences** | Simple settings (booleans, loose strings) | Primitives with `Preferences.Key<T>` | No formal migration | — Not used (replaced by the option below) |
+| **Typed DataStore** + `kotlinx.serialization` | Structured settings — cohesive, type-safe object | `@Serializable data class` | New fields with `defaultValue` | ✅ `SettingsConfig` — `darkTheme` + `driverName` |
+| **Room** | Operational data with queries, filters and relationships | `@Entity` + `@Dao` + SQL | `Migration(from, to)` with explicit SQL | ✅ `EntregaEntity` — list + conclude + sync flag |
 
-**Por que Typed DataStore e não Preferences DataStore?**  
-Preferences DataStore usa chaves `stringPreferencesKey("dark_theme")` — um typo é um bug silencioso em runtime. Com `@Serializable data class`, errar o nome de um campo é erro de compilação.
+**Why Typed DataStore instead of Preferences DataStore?**  
+Preferences DataStore uses string keys like `stringPreferencesKey("dark_theme")` — a typo is a silent runtime bug. With a `@Serializable data class`, misspelling a field name is a compile-time error.
 
-**Por que não usar Room para as configurações?**  
-Room é otimizado para conjuntos de dados com queries (filtragem, ordenação, JOIN). Persistir dois campos de configuração em Room seria overhead sem benefício — DataStore é atômico, coroutine-native e não exige migrations SQL para mudanças simples.
+**Why not use Room for settings?**  
+Room is designed for datasets that need queries (filtering, ordering, JOIN). Persisting two config fields in Room adds SQL overhead with no benefit — DataStore is atomic, coroutine-native, and requires no SQL migrations for simple schema additions.
 
-**Navegação no código para demonstrar a tabela:**
+**Code navigation to demonstrate the table:**
 
 ```
 1. Typed DataStore
-   SettingsConfig.kt            ← @Serializable data class (o "proto")
-   SettingsSerializer.kt        ← readFrom / writeTo com kotlinx.serialization
+   SettingsConfig.kt            ← @Serializable data class (the "proto")
+   SettingsSerializer.kt        ← readFrom / writeTo with kotlinx.serialization
    AppSettingsDataStore.kt      ← by dataStore(fileName = "settings.json")
    SettingsRepositoryImpl.kt    ← dataStore.updateData { it.copy(…) }
-   SettingsScreen.kt            ← Switch dark theme + campo nome motorista
+   SettingsScreen.kt            ← dark theme switch + driver name field
 
 2. Room
-   EntregaEntity.kt             ← @Entity com horarioConclusao (coluna v2)
-   AppDatabase.kt               ← version = 2 + MIGRATION_1_2
+   EntregaEntity.kt             ← @Entity with horarioConclusao (v2 column) + uuid (v3 column)
+   AppDatabase.kt               ← version = 3 + MIGRATION_1_2 + MIGRATION_2_3
    EntregaDao.kt                ← @Query UPDATE + observarTodas(): Flow<List<>>
-   EntregasScreen.kt            ← card exibe "Concluded at HH:mm"
+   EntregasScreen.kt            ← card displays "Concluded at HH:mm"
 ```
 
 ---
 
-## Bloco C — Room Migration (schema versioning without data loss)
+## Room Migration (schema versioning without data loss)
 
 ### Context
 
@@ -432,7 +432,7 @@ override suspend fun concluirEntrega(id: String) {
 
 ---
 
-## Bloco C — Proto DataStore (typed settings with kotlinx.serialization)
+## Proto DataStore (typed settings with kotlinx.serialization)
 
 ### Why typed DataStore instead of Preferences DataStore
 
@@ -540,6 +540,102 @@ Navigation is handled by `AppNavigation.kt` (NavHost with two routes). `Settings
 | Preferences DataStore | ✗ String keys | N/A | Low | |
 | Proto DataStore + .proto file | ✓ | Protobuf rules | High | |
 | **Typed DataStore + kotlinx.serialization** | **✓** | **Default values** | **Low** | **✓** |
+
+---
+
+## Offline-first, synchronization and retry
+
+### Canonical architecture
+
+```
+UI (Compose)
+     ↑ observes Flow
+┌─────────────────────┐
+│  Room = SOURCE OF   │  ← UI ALWAYS reads from local DB, never from network
+│       TRUTH         │
+└─────────────────────┘
+     ↑ writes                   ↑ writes after server ACK
+User actions              SyncWorker drains the queue
+  (conclude delivery)       when network is available (CONNECTED constraint)
+     ↓                             ↑ retry with exponential backoff
+┌─────────────────────┐
+│  sincronizada=false │  → WorkManager schedules sync on outbox entry
+│  (local outbox)     │
+└─────────────────────┘
+```
+
+### UUID as idempotency key — the pattern that prevents duplicate deliveries
+
+```kotlin
+// Entrega.kt — client-generated UUID, domain layer does not care how it's used
+data class Entrega(
+    val id: String,
+    // ...
+    val uuid: String = ""  // set by repository at persistence time
+)
+
+// EntregaRepositoryImpl.kt — UUID generated here, ViewModel/domain stay clean
+private fun Entrega.toEntity() = EntregaEntity(
+    // ...
+    uuid = uuid.ifBlank { UUID.randomUUID().toString() }
+)
+```
+
+The repository is the only layer that knows about UUID generation — exactly as the delivery timestamp is generated in the repository, not the ViewModel.
+
+### `SyncWorker` — per-delivery sync with ACK contract
+
+```kotlin
+override suspend fun doWork(): Result {
+    val pendentes = repository.listarPendentes()  // snapshot: sincronizada=0
+
+    pendentes.forEach { entrega ->
+        // Simulates: api.enviar(payload, idempotencyKey = entrega.uuid)
+        // Server deduplicates by UUID — if sent twice (crash after POST, before ACK),
+        // the second call is a no-op on the server side.
+        Log.d(TAG, "POST /entregas idempotency-key=${entrega.uuid}")
+
+        // Mark synced only AFTER the ACK — if the process dies here,
+        // WorkManager retries and the entry is retransmitted (with the same UUID).
+        repository.marcarSincronizadaPorUuid(entrega.uuid)
+    }
+    return Result.success()
+}
+```
+
+**Why this matters:** with the old `marcarTodasSincronizadas()` approach, a crash between "send" and "mark" would mark entries as synced even though the server never received them. The per-UUID approach means the outbox entry survives any partial failure.
+
+### Room Migration 2 → 3
+
+```kotlin
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // Empty string default for existing rows — they are seed/mock data,
+        // not real outbox events. New deliveries always get a UUID from the repository.
+        db.execSQL("ALTER TABLE entrega ADD COLUMN uuid TEXT NOT NULL DEFAULT ''")
+    }
+}
+```
+
+This is the second explicit migration in the project. Together with `MIGRATION_1_2`, it demonstrates the evolution of a production schema without ever touching `fallbackToDestructiveMigration()`.
+
+### 6.2 WorkManager — the full picture
+
+| Mechanism | How it's implemented |
+|---|---|
+| Guaranteed execution | `CoroutineWorker` — survives process death and device reboot |
+| Network constraint | `NetworkType.CONNECTED` — no retry waste on airplane mode |
+| Exponential backoff | `BackoffPolicy.EXPONENTIAL, 30s` — respects network recovery time |
+| No duplicate workers | `enqueueUniqueWork("sync_entregas", KEEP)` |
+| Reactive status | `getWorkInfosForUniqueWorkFlow` → `StateFlow<WorkInfo.State?>` in ViewModel |
+
+### Interview script (section 6.3 of study material)
+
+The app demonstrates the exact scenario from the script:
+
+> *"The delivery event was written to Room immediately, with a client-generated UUID, and a pending queue was drained by WorkManager when connectivity returned — with exponential backoff and a network constraint. The UUID guaranteed idempotency: if the same POST was sent twice due to a network drop, the server would deduplicate it."*
+
+**Live demo sequence:** airplane mode → tap "Conclude" on 3 deliveries → badge shows **"3 pending sync"** → disable airplane mode → WorkManager runs → SyncWorker logs `POST /entregas idempotency-key=<uuid>` per delivery → badge zeroes.
 
 ---
 

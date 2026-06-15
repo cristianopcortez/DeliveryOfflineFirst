@@ -7,5 +7,7 @@ interface EntregaRepository {
     fun observarTodas(): Flow<List<Entrega>>
     suspend fun inserirTodas(entregas: List<Entrega>)
     suspend fun concluirEntrega(id: String)
+    suspend fun listarPendentes(): List<Entrega>
+    suspend fun marcarSincronizadaPorUuid(uuid: String)
     suspend fun marcarTodasSincronizadas()
 }
