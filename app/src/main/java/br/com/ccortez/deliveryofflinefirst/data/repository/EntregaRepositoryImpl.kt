@@ -20,6 +20,10 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         dao.concluirEntrega(id)
     }
 
+    override suspend fun marcarTodasSincronizadas() {
+        dao.marcarTodasSincronizadas()
+    }
+
     private fun EntregaEntity.toEntrega() = Entrega(
         id = id,
         cliente = cliente,

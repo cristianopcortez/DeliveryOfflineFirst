@@ -11,41 +11,45 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.work.WorkInfo
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
+import br.com.ccortez.deliveryofflinefirst.presentation.viewmodel.EntregasEvent
 import br.com.ccortez.deliveryofflinefirst.presentation.viewmodel.EntregasViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,39 +59,48 @@ fun EntregasScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // dropdown open/close is ephemeral — no need to survive rotation
+    // Estado de filtros vem do ViewModel — sobrevive à rotação via ViewModel (melhor que rememberSaveable)
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val selectedCliente by viewModel.selectedCliente.collectAsStateWithLifecycle()
+
+    // Lista filtrada via combine + debounce + flatMapLatest + stateIn no ViewModel
+    val entregasFiltradas by viewModel.entregasFiltradas.collectAsStateWithLifecycle()
+
+    // WorkManager status observado reativamente — sem polling
+    val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
+
+    // Estado efêmero de UI — dropdown não precisa sobreviver à rotação
     var expanded by remember { mutableStateOf(false) }
-    var selectedCliente by remember { mutableStateOf("Todos") }
-
-    // search text must survive rotation: losing user input on config change is bad UX
-    var searchQuery by rememberSaveable { mutableStateOf("") }
-
-    // derivedStateOf: recalculates only when sincronizada changes, not on every recomposition
-    val pendentesSync by remember {
-        derivedStateOf { state.entregas.count { !it.sincronizada } }
-    }
 
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    // scroll position changes on every pixel — derivedStateOf fires only when the boolean flips
+    // derivedStateOf: recompõe o FAB apenas quando o booleano flipa, não a cada pixel de scroll
     val showScrollToTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex > 0 }
     }
 
-    val entregasFiltradas = remember(state.entregas, selectedCliente, searchQuery) {
-        state.entregas
-            .filter { if (selectedCliente == "Todos") true else it.cliente == selectedCliente }
-            .filter { entrega ->
-                if (searchQuery.isBlank()) true
-                else entrega.cliente.contains(searchQuery, ignoreCase = true)
-                    || entrega.endereco.contains(searchQuery, ignoreCase = true)
+    // derivedStateOf: recalcula só quando sincronizada muda, não em qualquer recomposição
+    val pendentesSync by remember {
+        derivedStateOf { state.entregas.count { !it.sincronizada } }
+    }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // LaunchedEffect coleta SharedFlow de eventos one-shot
+    // Diferença vs StateFlow: o snackbar não re-aparece ao girar a tela
+    LaunchedEffect(Unit) {
+        viewModel.eventos.collect { evento ->
+            when (evento) {
+                is EntregasEvent.ShowSnackbar -> snackbarHostState.showSnackbar(evento.message)
             }
+        }
     }
 
     Scaffold(
         modifier = modifier,
-        topBar = { TopAppBar(title = { Text("Entregas") }) }
+        topBar = { TopAppBar(title = { Text("Entregas") }) },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -100,7 +113,7 @@ fun EntregasScreen(
                 expanded = expanded,
                 onExpandedChange = { expanded = it },
                 onClienteSelected = { cliente ->
-                    selectedCliente = cliente
+                    viewModel.onClienteSelected(cliente)
                     expanded = false
                 },
                 modifier = Modifier
@@ -110,7 +123,7 @@ fun EntregasScreen(
 
             OutlinedTextField(
                 value = searchQuery,
-                onValueChange = { searchQuery = it },
+                onValueChange = viewModel::onSearchQueryChange,
                 placeholder = { Text("Buscar por cliente ou endereço...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true,
@@ -124,9 +137,16 @@ fun EntregasScreen(
                     count = pendentesSync,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                        .padding(start = 16.dp, end = 16.dp, bottom = 4.dp)
                 )
             }
+
+            SyncStatusBanner(
+                syncStatus = syncStatus,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+            )
 
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
@@ -186,6 +206,52 @@ fun EntregasScreen(
     }
 }
 
+@Composable
+private fun SyncStatusBanner(
+    syncStatus: WorkInfo.State?,
+    modifier: Modifier = Modifier
+) {
+    val (texto, cor) = when (syncStatus) {
+        WorkInfo.State.RUNNING ->
+            "↻ Syncing..." to MaterialTheme.colorScheme.primaryContainer
+        WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+            "⏳ Sync pending — waiting for network" to MaterialTheme.colorScheme.secondaryContainer
+        WorkInfo.State.SUCCEEDED ->
+            "✓ All synced" to MaterialTheme.colorScheme.tertiaryContainer
+        WorkInfo.State.FAILED ->
+            "✗ Sync failed" to MaterialTheme.colorScheme.errorContainer
+        else -> return
+    }
+
+    Surface(
+        modifier = modifier,
+        color = cor,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            text = texto,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    }
+}
+
+@Composable
+private fun PendenteSyncBadge(count: Int, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.errorContainer,
+        shape = MaterialTheme.shapes.small
+    ) {
+        Text(
+            text = "⚠ $count pending sync",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ClienteFilterDropdown(
@@ -225,22 +291,6 @@ private fun ClienteFilterDropdown(
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun PendenteSyncBadge(count: Int, modifier: Modifier = Modifier) {
-    Surface(
-        modifier = modifier,
-        color = MaterialTheme.colorScheme.errorContainer,
-        shape = MaterialTheme.shapes.small
-    ) {
-        Text(
-            text = "⚠ $count pending sync",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-        )
     }
 }
 

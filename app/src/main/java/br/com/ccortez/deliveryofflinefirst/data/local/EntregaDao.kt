@@ -16,4 +16,7 @@ interface EntregaDao {
 
     @Query("UPDATE entrega SET status = 'Concluída', sincronizada = 0 WHERE id = :id")
     suspend fun concluirEntrega(id: String)
+
+    @Query("UPDATE entrega SET sincronizada = 1 WHERE sincronizada = 0")
+    suspend fun marcarTodasSincronizadas()
 }
