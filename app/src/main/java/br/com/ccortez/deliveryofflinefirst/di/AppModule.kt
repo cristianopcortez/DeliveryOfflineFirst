@@ -1,10 +1,15 @@
 package br.com.ccortez.deliveryofflinefirst.di
 
 import android.content.Context
+import androidx.datastore.core.DataStore
 import br.com.ccortez.deliveryofflinefirst.data.local.AppDatabase
 import br.com.ccortez.deliveryofflinefirst.data.local.EntregaDao
+import br.com.ccortez.deliveryofflinefirst.data.local.datastore.SettingsConfig
+import br.com.ccortez.deliveryofflinefirst.data.local.datastore.settingsDataStore
 import br.com.ccortez.deliveryofflinefirst.data.repository.EntregaRepositoryImpl
+import br.com.ccortez.deliveryofflinefirst.data.repository.SettingsRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
+import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -29,4 +34,14 @@ object AppModule {
     @Singleton
     fun provideEntregaRepository(dao: EntregaDao): EntregaRepository =
         EntregaRepositoryImpl(dao)
+
+    @Provides
+    @Singleton
+    fun provideSettingsDataStore(@ApplicationContext context: Context): DataStore<SettingsConfig> =
+        context.settingsDataStore
+
+    @Provides
+    @Singleton
+    fun provideSettingsRepository(dataStore: DataStore<SettingsConfig>): SettingsRepository =
+        SettingsRepositoryImpl(dataStore)
 }

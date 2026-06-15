@@ -11,16 +11,19 @@ Android offline-first delivery app built with Jetpack Compose, MVVM + Clean Arch
 ```
 deliveryofflinefirst/
 ├── data/
-│   ├── local/          # Room — EntregaEntity, EntregaDao, AppDatabase
-│   ├── repository/     # EntregaRepositoryImpl + entity↔domain mappers
+│   ├── local/
+│   │   ├── datastore/  # SettingsConfig, SettingsSerializer, AppSettingsDataStore
+│   │   └── (room)      # EntregaEntity, EntregaDao, AppDatabase
+│   ├── repository/     # EntregaRepositoryImpl, SettingsRepositoryImpl + mappers
 │   └── worker/         # SyncWorker (CoroutineWorker via Hilt)
 ├── di/                 # AppModule — Hilt SingletonComponent
 ├── domain/
 │   ├── model/          # Entrega (pure Kotlin, no Android deps)
-│   └── repository/     # EntregaRepository interface (contract)
+│   └── repository/     # EntregaRepository, SettingsRepository interfaces
+├── navigation/         # AppNavigation — NavHost with Entregas + Settings routes
 └── presentation/
-    ├── screen/         # EntregasScreen (stateless composables)
-    └── viewmodel/      # EntregasViewModel, EntregasUiState, EntregasEvent
+    ├── screen/         # EntregasScreen, SettingsScreen (stateless composables)
+    └── viewmodel/      # EntregasViewModel, SettingsViewModel + UiState/Event types
 ```
 
 **Pattern:** Clean Architecture + MVVM  
@@ -329,6 +332,41 @@ User actions          WorkManager drains when network is available
 
 ---
 
+## Bloco C — Persistência local (DataStore × Room)
+
+### Tabela 5.1 A — Decision table: what the app implements
+
+| Tecnologia | Quando usar | Tipo de dado | Migração | Implementado neste app |
+|---|---|---|---|---|
+| **DataStore Preferences** | Configurações simples (booleanos, strings soltas) | Primitivos com `Preferences.Key<T>` | Sem migração formal | — Não usado (substituído pela opção abaixo) |
+| **Typed DataStore** + `kotlinx.serialization` | Configurações estruturadas — objeto coeso, type-safe | `@Serializable data class` | Novos campos com `defaultValue` | ✅ `SettingsConfig` — `darkTheme` + `motoristaNome` |
+| **Room** | Dados operacionais com queries, filtros e relacionamentos | `@Entity` + `@Dao` + SQL | `Migration(from, to)` com SQL explícito | ✅ `EntregaEntity` — listagem + conclusão + sync flag |
+
+**Por que Typed DataStore e não Preferences DataStore?**  
+Preferences DataStore usa chaves `stringPreferencesKey("dark_theme")` — um typo é um bug silencioso em runtime. Com `@Serializable data class`, errar o nome de um campo é erro de compilação.
+
+**Por que não usar Room para as configurações?**  
+Room é otimizado para conjuntos de dados com queries (filtragem, ordenação, JOIN). Persistir dois campos de configuração em Room seria overhead sem benefício — DataStore é atômico, coroutine-native e não exige migrations SQL para mudanças simples.
+
+**Navegação no código para demonstrar a tabela:**
+
+```
+1. Typed DataStore
+   SettingsConfig.kt            ← @Serializable data class (o "proto")
+   SettingsSerializer.kt        ← readFrom / writeTo com kotlinx.serialization
+   AppSettingsDataStore.kt      ← by dataStore(fileName = "settings.json")
+   SettingsRepositoryImpl.kt    ← dataStore.updateData { it.copy(…) }
+   SettingsScreen.kt            ← Switch dark theme + campo nome motorista
+
+2. Room
+   EntregaEntity.kt             ← @Entity com horarioConclusao (coluna v2)
+   AppDatabase.kt               ← version = 2 + MIGRATION_1_2
+   EntregaDao.kt                ← @Query UPDATE + observarTodas(): Flow<List<>>
+   EntregasScreen.kt            ← card exibe "Concluded at HH:mm"
+```
+
+---
+
 ## Bloco C — Room Migration (schema versioning without data loss)
 
 ### Context
@@ -394,6 +432,117 @@ override suspend fun concluirEntrega(id: String) {
 
 ---
 
+## Bloco C — Proto DataStore (typed settings with kotlinx.serialization)
+
+### Why typed DataStore instead of Preferences DataStore
+
+`Preferences DataStore` stores key-value pairs with string keys — a typo in a key name is a silent runtime bug. **Typed DataStore** stores a serialized object; adding a field with the wrong type or name is a compile-time error. It also gives atomic reads and transactional writes without any SQLite overhead.
+
+### Architecture: the `SettingsConfig` journey
+
+```
+Switch toggled
+      ↓
+SettingsViewModel.onDarkThemeChange(true)
+      ↓
+SettingsRepository.updateDarkTheme(true)   [interface, domain layer]
+      ↓
+SettingsRepositoryImpl.dataStore.updateData { it.copy(darkTheme = true) }
+      ↓
+DataStore writes SettingsSerializer.writeTo() → settings.json  (atomic)
+      ↓
+DataStore.data Flow emits new SettingsConfig
+      ↓
+SettingsViewModel.init { collect } → _uiState.update { … }
+      ↓
+MainActivity: val settingsState by settingsViewModel.uiState.collectAsStateWithLifecycle()
+      ↓
+DeliveryOfflineFirstTheme(darkTheme = settingsState.darkTheme)  ← theme changes immediately
+```
+
+### `SettingsConfig` — the serialized model
+
+```kotlin
+// SettingsConfig.kt
+@Serializable
+data class SettingsConfig(
+    val darkTheme: Boolean = false,
+    val motoristaNome: String = "Motorista"
+)
+```
+
+Adding a field here with a default value is a backward-compatible change — existing `settings.json` files decode correctly (missing fields use the default).
+
+### `SettingsSerializer` — custom `kotlinx.serialization` Serializer
+
+```kotlin
+object SettingsSerializer : Serializer<SettingsConfig> {
+
+    override val defaultValue: SettingsConfig = SettingsConfig()
+
+    override suspend fun readFrom(input: InputStream): SettingsConfig {
+        return try {
+            Json.decodeFromString(SettingsConfig.serializer(), input.readBytes().decodeToString())
+        } catch (e: SerializationException) {
+            defaultValue   // corrupted file → return defaults rather than crash
+        }
+    }
+
+    override suspend fun writeTo(t: SettingsConfig, output: OutputStream) {
+        output.write(Json.encodeToString(SettingsConfig.serializer(), t).encodeToByteArray())
+    }
+}
+```
+
+### DataStore delegate — single instance per process
+
+```kotlin
+// AppSettingsDataStore.kt
+val Context.settingsDataStore: DataStore<SettingsConfig> by dataStore(
+    fileName = "settings.json",
+    serializer = SettingsSerializer
+)
+```
+
+The `by dataStore(…)` Kotlin property delegate guarantees that only one `DataStore` instance exists for a given file per process — no race conditions even with concurrent collectors.
+
+### Repository — `catch` for IO resilience
+
+```kotlin
+override val settings: Flow<SettingsConfig> = dataStore.data
+    .catch { e ->
+        if (e is IOException) emit(SettingsConfig())  // graceful degradation
+        else throw e                                   // unexpected errors rethrow
+    }
+```
+
+### Settings screen — Navigation Compose integration
+
+```
+EntregasScreen  ─── ⚙ icon ───▶  SettingsScreen
+  TopAppBar                         ← back arrow
+  shows motoristaNome               dark theme switch
+                                    driver name field + Save button
+```
+
+Navigation is handled by `AppNavigation.kt` (NavHost with two routes). `SettingsViewModel` is scoped to the `Activity` so the same instance is shared between both screens — the theme changes are reflected immediately across the whole app without a restart.
+
+### Where it shows in the app
+
+1. **Dark Theme toggle** in `SettingsScreen` → persisted to `settings.json` → `DeliveryOfflineFirstTheme(darkTheme = …)` re-applies the color scheme live.
+2. **Driver Name** → persisted → appears as subtitle in `EntregasScreen` TopAppBar.
+3. The settings icon (⚙) in `EntregasScreen` navigates to `SettingsScreen` via Navigation Compose.
+
+### Compared to the alternatives
+
+| Approach | Type safety | Schema migration | Boilerplate | Chosen |
+|---|---|---|---|---|
+| Preferences DataStore | ✗ String keys | N/A | Low | |
+| Proto DataStore + .proto file | ✓ | Protobuf rules | High | |
+| **Typed DataStore + kotlinx.serialization** | **✓** | **Default values** | **Low** | **✓** |
+
+---
+
 ## Key dependency versions
 
 | Library | Version |
@@ -404,5 +553,8 @@ override suspend fun concluirEntrega(id: String) {
 | Hilt | 2.59.2 |
 | Room | 2.7.1 |
 | WorkManager | 2.10.1 |
+| DataStore | 1.1.4 |
+| Navigation Compose | 2.8.9 |
+| kotlinx.serialization | 1.7.3 |
 | Lifecycle | 2.10.0 |
 | KSP | 2.3.9 |
