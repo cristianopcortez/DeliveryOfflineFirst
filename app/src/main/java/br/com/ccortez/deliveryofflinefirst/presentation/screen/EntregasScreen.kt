@@ -47,6 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkInfo
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import br.com.ccortez.deliveryofflinefirst.presentation.viewmodel.EntregasEvent
 import br.com.ccortez.deliveryofflinefirst.presentation.viewmodel.EntregasViewModel
 import kotlinx.coroutines.launch
@@ -312,6 +315,16 @@ private fun EntregaCard(entrega: Entrega, onConcluir: () -> Unit) {
                 text = "Status: ${entrega.status}",
                 style = MaterialTheme.typography.bodySmall
             )
+            if (entrega.horarioConclusao != null) {
+                val time = SimpleDateFormat("HH:mm", Locale.getDefault())
+                    .format(Date(entrega.horarioConclusao))
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Concluded at $time",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
             if (entrega.status != "Concluída") {
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(

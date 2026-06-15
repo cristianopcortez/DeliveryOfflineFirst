@@ -17,7 +17,7 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
     }
 
     override suspend fun concluirEntrega(id: String) {
-        dao.concluirEntrega(id)
+        dao.concluirEntrega(id, timestamp = System.currentTimeMillis())
     }
 
     override suspend fun marcarTodasSincronizadas() {
@@ -29,7 +29,8 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         cliente = cliente,
         endereco = endereco,
         status = status,
-        sincronizada = sincronizada
+        sincronizada = sincronizada,
+        horarioConclusao = horarioConclusao
     )
 
     private fun Entrega.toEntity() = EntregaEntity(
@@ -37,6 +38,7 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         cliente = cliente,
         endereco = endereco,
         status = status,
-        sincronizada = sincronizada
+        sincronizada = sincronizada,
+        horarioConclusao = horarioConclusao
     )
 }

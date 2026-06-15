@@ -9,5 +9,6 @@ data class EntregaEntity(
     val cliente: String,
     val endereco: String,
     val status: String,
-    val sincronizada: Boolean = true
+    val sincronizada: Boolean = true,
+    val horarioConclusao: Long? = null
 )

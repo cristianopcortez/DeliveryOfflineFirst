@@ -112,7 +112,7 @@ private fun ClienteFilterDropdown(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onClienteSelected: (String) -> Unit,
-    ...
+    // ...
 )
 
 // EntregaCard: does not know what "conclude" means
@@ -326,6 +326,71 @@ User actions          WorkManager drains when network is available
 ```
 
 **Flow:** user taps "Conclude" → Room updates instantly (`sincronizada=false`) → Room Flow emits → screen reacts → badge shows pending count → WorkManager schedules sync → when network returns, SyncWorker runs → marks entries as synchronized → badge zeroes.
+
+---
+
+## Bloco C — Room Migration (schema versioning without data loss)
+
+### Context
+
+When the `horarioConclusao` (conclusion timestamp) field was added to the delivery model, an explicit Room migration was required. Using `fallbackToDestructiveMigration()` was intentionally avoided — dropping the local database would erase pending deliveries not yet synced to the server, which is unacceptable in an offline-first field app.
+
+### Where it shows in the app
+
+When a driver taps **"Conclude"** on a delivery card, the repository calls `System.currentTimeMillis()` and passes the timestamp to the DAO. The `EntregaCard` then displays **"Concluded at HH:mm"** in muted text below the status.
+
+```
+┌─────────────────────────────┐
+│  Carlos Lima                │
+│  Av. Brasil, 456            │
+│  Status: Concluída          │
+│  Concluded at 14:32         │  ← horarioConclusao from DB (migration v2)
+└─────────────────────────────┘
+```
+
+### The migration
+
+```kotlin
+// AppDatabase.kt — version bumped from 1 to 2
+@Database(entities = [EntregaEntity::class], version = 2, exportSchema = true)
+abstract class AppDatabase : RoomDatabase() {
+
+    val MIGRATION_1_2 = object : Migration(1, 2) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            // ALTER TABLE preserves all existing rows — existing deliveries keep their data
+            // NULL is the default for rows that existed before this migration
+            db.execSQL("ALTER TABLE entrega ADD COLUMN horarioConclusao INTEGER")
+        }
+    }
+}
+```
+
+```kotlin
+// AppModule.kt — migration registered in the builder
+Room.databaseBuilder(context, AppDatabase::class.java, "entregas.db")
+    .addMigrations(MIGRATION_1_2)   // explicit migration registered — no data loss
+    .build()
+```
+
+### Repository generates the timestamp — ViewModel stays clean
+
+The `EntregaRepository` interface signature does not expose the timestamp. The repository implementation is the only layer that knows about `System.currentTimeMillis()`, keeping the domain contract and the ViewModel unchanged.
+
+```kotlin
+// EntregaRepository.kt (interface — unchanged)
+suspend fun concluirEntrega(id: String)
+
+// EntregaRepositoryImpl.kt — generates timestamp internally
+override suspend fun concluirEntrega(id: String) {
+    dao.concluirEntrega(id, timestamp = System.currentTimeMillis())
+}
+```
+
+### Key points (section 5.4 of study material)
+
+- `exportSchema = true` — Room exports the schema as a JSON file to `app/schemas/`, which should be committed to Git. This creates a versioned audit trail of all schema changes.
+- `Migration(1, 2)` with explicit SQL — predictable, auditable, and testable with `MigrationTestHelper`.
+- `fallbackToDestructiveMigration()` is absent by design — it would silently wipe all local data on version mismatch, destroying offline-queued deliveries.
 
 ---
 
