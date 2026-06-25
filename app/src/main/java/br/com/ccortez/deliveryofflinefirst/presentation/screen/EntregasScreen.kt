@@ -24,6 +24,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,9 +43,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkInfo
@@ -60,42 +63,53 @@ import kotlinx.coroutines.launch
 @Composable
 fun EntregasScreen(
     viewModel: EntregasViewModel,
+    modifier: Modifier = Modifier,
     motoristaNome: String = "Motorista",
     onNavigateToSettings: () -> Unit = {},
-    modifier: Modifier = Modifier
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-    // Estado de filtros vem do ViewModel — sobrevive à rotação via ViewModel (melhor que rememberSaveable)
+    // searchQuery lives in the ViewModel — debounce requires a persistent StateFlow
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
-    val selectedCliente by viewModel.selectedCliente.collectAsStateWithLifecycle()
 
-    // Lista filtrada via combine + debounce + flatMapLatest + stateIn no ViewModel
+    // Text-filtered list via debounce + flatMapLatest + stateIn in the ViewModel
     val entregasFiltradas by viewModel.entregasFiltradas.collectAsStateWithLifecycle()
 
-    // WorkManager status observado reativamente — sem polling
+    // selectedCliente uses remember — resets to "Todos" on rotation (intentional behaviour)
+    var selectedCliente by remember { mutableStateOf("Todos") }
+
+    // Client filtering done here in the composable; recalculates only when inputs change
+    val entregasExibidas = remember(entregasFiltradas, selectedCliente) {
+        if (selectedCliente == "Todos") entregasFiltradas
+        else entregasFiltradas.filter { it.cliente == selectedCliente }
+    }
+
+    // WorkManager status observed reactively — no polling
     val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
 
-    // Estado efêmero de UI — dropdown não precisa sobreviver à rotação
+    // rememberSaveable: survives rotation without living in the ViewModel
+    var notLivedInViewModel by rememberSaveable { mutableStateOf("") }
+
+    // Ephemeral UI state — dropdown does not need to survive rotation
     var expanded by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
-    // derivedStateOf: recompõe o FAB apenas quando o booleano flipa, não a cada pixel de scroll
+    // derivedStateOf: recomposes the FAB only when the boolean flips, not on every scroll pixel
     val showScrollToTop by remember {
         derivedStateOf { listState.firstVisibleItemIndex > 0 }
     }
 
-    // derivedStateOf: recalcula só quando sincronizada muda, não em qualquer recomposição
+    // derivedStateOf: recalculates only when sincronizada changes, not on every recomposition
     val pendentesSync by remember {
         derivedStateOf { state.entregas.count { !it.sincronizada } }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // LaunchedEffect coleta SharedFlow de eventos one-shot
-    // Diferença vs StateFlow: o snackbar não re-aparece ao girar a tela
+    // LaunchedEffect collects one-shot events from SharedFlow
+    // Key difference vs StateFlow: the snackbar does not re-appear on rotation
     LaunchedEffect(Unit) {
         viewModel.eventos.collect { evento ->
             when (evento) {
@@ -141,7 +155,7 @@ fun EntregasScreen(
                 expanded = expanded,
                 onExpandedChange = { expanded = it },
                 onClienteSelected = { cliente ->
-                    viewModel.onClienteSelected(cliente)
+                    selectedCliente = cliente
                     expanded = false
                 },
                 modifier = Modifier
@@ -158,6 +172,19 @@ fun EntregasScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                    .testTag("campo_busca")
+            )
+
+            OutlinedTextField(
+                value = notLivedInViewModel,
+                onValueChange = { notLivedInViewModel = it },
+                label = { Text("Anotação rápida") },
+                placeholder = { Text("Ex.: portão azul, campainha quebrada...") },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                    .testTag("campo_not_lived_in_viewmodel")
             )
 
             if (pendentesSync > 0) {
@@ -187,7 +214,7 @@ fun EntregasScreen(
                             modifier = Modifier.align(Alignment.Center)
                         )
                     }
-                    entregasFiltradas.isEmpty() -> {
+                    entregasExibidas.isEmpty() -> {
                         Text(
                             text = "Nenhuma entrega encontrada.",
                             modifier = Modifier.align(Alignment.Center)
@@ -200,7 +227,7 @@ fun EntregasScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(
-                                items = entregasFiltradas,
+                                items = entregasExibidas,
                                 key = { it.id }
                             ) { entrega ->
                                 EntregaCard(
@@ -306,7 +333,8 @@ private fun ClienteFilterDropdown(
             colors = ExposedDropdownMenuDefaults.outlinedTextFieldColors(),
             modifier = Modifier
                 .fillMaxWidth()
-                .menuAnchor()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .testTag("dropdown_cliente")
         )
         ExposedDropdownMenu(
             expanded = expanded,
@@ -315,7 +343,8 @@ private fun ClienteFilterDropdown(
             opcoes.forEach { cliente ->
                 DropdownMenuItem(
                     text = { Text(cliente) },
-                    onClick = { onClienteSelected(cliente) }
+                    onClick = { onClienteSelected(cliente) },
+                    modifier = Modifier.testTag("dropdown_item_$cliente")
                 )
             }
         }

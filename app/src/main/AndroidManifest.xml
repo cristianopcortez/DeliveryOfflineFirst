@@ -13,6 +13,34 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.DeliveryOfflineFirst">
 
+        <!--
+            Disables WorkManager's auto-initialization via androidx.startup.
+            WorkManagerInitializer runs inside ContentProvider.onCreate(), which fires
+            BEFORE Application.onCreate(). At that point Hilt has not yet injected
+            DeliveryApplication.workerFactory, so workManagerConfiguration() would be
+            called with an uninitialised lateinit var, causing WorkManager to be
+            initialised with the default (reflection-only) WorkerFactory instead of
+            HiltWorkerFactory — leading to NoSuchMethodException for @HiltWorker classes.
+
+            tools:node="merge" keeps the provider alive for other libraries that also
+            use androidx.startup (e.g. ProfileInstaller, Emoji2).
+            tools:node="remove" only removes the WorkManagerInitializer entry.
+
+            WorkManager is still initialised lazily on the first WorkManager.getInstance()
+            call, at which point Application.onCreate() has already run and workerFactory
+            is fully injected.
+        -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

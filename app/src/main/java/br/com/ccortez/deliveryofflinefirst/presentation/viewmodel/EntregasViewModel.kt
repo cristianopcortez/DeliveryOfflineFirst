@@ -15,6 +15,8 @@ import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,7 +24,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
@@ -33,46 +34,41 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
+@OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class EntregasViewModel @Inject constructor(
     private val repository: EntregaRepository,
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    // Estado da tela — fonte da verdade para loading, erro e lista completa (usada no dropdown)
+    // Screen state — single source of truth for loading, error, and full list (used by the dropdown)
     private val _uiState = MutableStateFlow(EntregasUiState())
     val uiState: StateFlow<EntregasUiState> = _uiState.asStateFlow()
 
-    // 4.1 — SharedFlow: eventos one-shot que não devem re-emitir na rotação
-    // Diferença chave vs StateFlow: não tem valor atual, não re-emite para novos coletores
+    // SharedFlow: one-shot events that must not re-emit on rotation
+    // Key difference vs StateFlow: no current value, does not replay to new collectors
     private val _eventos = MutableSharedFlow<EntregasEvent>()
     val eventos = _eventos.asSharedFlow()
 
-    // 4.7 — Fontes dos filtros como StateFlow (mutáveis internamente, imutáveis externamente)
+    // Search filter source as StateFlow (mutable internally, immutable externally)
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _selectedCliente = MutableStateFlow("Todos")
-    val selectedCliente: StateFlow<String> = _selectedCliente.asStateFlow()
-
-    // 4.7 combine | 4.7 debounce + distinctUntilChanged + flatMapLatest | 4.2 stateIn + WhileSubscribed
-    // combine: merge dois flows de filtro em um único par antes de fazer a query
-    // debounce: aguarda 300ms sem mudança antes de disparar (evita query a cada tecla)
-    // flatMapLatest: cancela a query anterior quando um novo filtro chega
-    // stateIn + WhileSubscribed(5000): converte cold → hot; mantém ativo 5s sem coletores (sobrevive à rotação)
-    val entregasFiltradas: StateFlow<List<Entrega>> = combine(
-        _searchQuery.debounce(300).distinctUntilChanged(),
-        _selectedCliente
-    ) { query, cliente -> Pair(query, cliente) }
-        .flatMapLatest { (query, cliente) ->
+    // debounce + distinctUntilChanged + flatMapLatest | stateIn + WhileSubscribed
+    // debounce: waits 300ms with no changes before firing (avoids a query on every keystroke)
+    // flatMapLatest: cancels the previous query when a new filter arrives
+    // stateIn + WhileSubscribed(5000): converts cold → hot; stays active 5s without collectors (survives rotation)
+    // Client filter stays in the composable with remember — resets on rotation intentionally
+    val entregasFiltradas: StateFlow<List<Entrega>> = _searchQuery
+        .debounce(300)
+        .distinctUntilChanged()
+        .flatMapLatest { query ->
             repository.observarTodas().map { list ->
-                list
-                    .filter { if (cliente == "Todos") true else it.cliente == cliente }
-                    .filter {
-                        query.isBlank() ||
-                        it.cliente.contains(query, ignoreCase = true) ||
-                        it.endereco.contains(query, ignoreCase = true)
-                    }
+                list.filter {
+                    query.isBlank() ||
+                    it.cliente.contains(query, ignoreCase = true) ||
+                    it.endereco.contains(query, ignoreCase = true)
+                }
             }
         }
         .stateIn(
@@ -81,7 +77,7 @@ class EntregasViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    // Observa o estado do WorkManager de forma reativa — sem polling
+    // Observes WorkManager state reactively — no polling
     val syncStatus: StateFlow<WorkInfo.State?> = WorkManager.getInstance(context)
         .getWorkInfosForUniqueWorkFlow("sync_entregas")
         .map { infos -> infos.firstOrNull()?.state }
@@ -113,14 +109,10 @@ class EntregasViewModel @Inject constructor(
         _searchQuery.value = query
     }
 
-    fun onClienteSelected(cliente: String) {
-        _selectedCliente.value = cliente
-    }
-
     fun concluirEntrega(id: String) {
         viewModelScope.launch {
             repository.concluirEntrega(id)
-            // SharedFlow emite o evento; a tela coleta via LaunchedEffect e exibe o Snackbar
+            // SharedFlow emits the event; the screen collects it via LaunchedEffect and shows the Snackbar
             _eventos.emit(EntregasEvent.ShowSnackbar("Entrega concluída. Sincronizará quando houver rede."))
             agendarSync()
         }
@@ -136,7 +128,7 @@ class EntregasViewModel @Inject constructor(
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
             .build()
 
-        // KEEP: se já há um sync enfileirado, não duplica — evita 50 syncs simultâneos
+        // KEEP: if a sync is already enqueued, do not duplicate it — prevents concurrent sync storms
         WorkManager.getInstance(context)
             .enqueueUniqueWork("sync_entregas", ExistingWorkPolicy.KEEP, request)
     }

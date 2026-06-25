@@ -75,16 +75,32 @@ val entregasFiltradas by viewModel.entregasFiltradas.collectAsStateWithLifecycle
 val syncStatus by viewModel.syncStatus.collectAsStateWithLifecycle()
 ```
 
-### `remember` vs `rememberSaveable` — choosing the right tool
+### `remember` vs `rememberSaveable` vs ViewModel — choosing the right tool
 
 ```kotlin
-// Ephemeral UI state: dropdown open/close does not need to survive rotation
+// 1. remember — ephemeral UI state, intentionally reset on rotation
+//    Use for: dropdown open/close, animation state, transient flags
 var expanded by remember { mutableStateOf(false) }
 
-// Search and filter state live in the ViewModel — survives rotation via ViewModel lifecycle,
-// which is even better than rememberSaveable (no Bundle size limit)
+// 2. rememberSaveable — survives rotation and system-initiated process death
+//    (saved to Bundle), but does NOT live in the ViewModel
+//    Use for: transient user input that should survive rotation
+//    but does not belong to business logic (no need for debounce, Flow, etc.)
+var anotacaoRapida by rememberSaveable { mutableStateOf("") }
+
+// 3. ViewModel StateFlow — survives rotation via ViewModel lifecycle
+//    Better than rememberSaveable for search/filter: no Bundle size limit,
+//    enables debounce + distinctUntilChanged + flatMapLatest
 val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 ```
+
+| Mechanism | Survives rotation | Survives process death | Scope |
+|---|---|---|---|
+| `remember` | ✗ | ✗ | Composition only |
+| `rememberSaveable` | ✓ | ✓ (Bundle) | Composition + saved state |
+| ViewModel `StateFlow` | ✓ | ✗ | ViewModel scope |
+
+> **Rule of thumb:** use `rememberSaveable` for UI-only transient input (e.g. a quick note field). Move state to the ViewModel only when it needs operators (debounce, combine, flatMapLatest) or when the value is shared across composables.
 
 ### `derivedStateOf` — avoiding unnecessary recomposition
 
@@ -429,6 +445,33 @@ override suspend fun concluirEntrega(id: String) {
 - `exportSchema = true` — Room exports the schema as a JSON file to `app/schemas/`, which should be committed to Git. This creates a versioned audit trail of all schema changes.
 - `Migration(1, 2)` with explicit SQL — predictable, auditable, and testable with `MigrationTestHelper`.
 - `fallbackToDestructiveMigration()` is absent by design — it would silently wipe all local data on version mismatch, destroying offline-queued deliveries.
+
+### Schema audit trail — `app/schemas/…/AppDatabase/`
+
+Room generates one JSON per database version when `exportSchema = true`. These files are committed to Git so that every schema change is visible in PR diffs and testable with `MigrationTestHelper`.
+
+| File | DB version | Columns added | Why |
+|---|---|---|---|
+| `1.json` | 1 | `id`, `cliente`, `endereco`, `status`, `sincronizada` | Initial schema — core delivery fields + offline sync flag |
+| `2.json` | 2 | `horarioConclusao INTEGER` (nullable) | Conclusion timestamp — `ALTER TABLE` preserves existing rows; `NULL` for rows created before this migration |
+| `3.json` | 3 | `uuid TEXT NOT NULL DEFAULT ''` | Idempotency key for the outbox pattern — empty string default for seed rows; new deliveries always get a `UUID.randomUUID()` from the repository |
+
+The full `CREATE TABLE` recorded in `3.json` reflects the cumulative result of all three versions:
+
+```sql
+CREATE TABLE IF NOT EXISTS `entrega` (
+    `id`               TEXT    NOT NULL,
+    `cliente`          TEXT    NOT NULL,
+    `endereco`         TEXT    NOT NULL,
+    `status`           TEXT    NOT NULL,
+    `sincronizada`     INTEGER NOT NULL,
+    `horarioConclusao` INTEGER,           -- nullable: added in v2
+    `uuid`             TEXT    NOT NULL,  -- added in v3, idempotency key
+    PRIMARY KEY(`id`)
+)
+```
+
+> Each JSON also stores an `identityHash` that Room uses at runtime to detect mismatches between the compiled `@Entity` and the on-device database — if they diverge without a registered migration, Room throws `IllegalStateException` instead of silently corrupting data.
 
 ---
 
