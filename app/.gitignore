@@ -1,1 +1,4 @@
 /build
+
+# Firebase — contains API keys and project identifiers; never commit
+google-services.json

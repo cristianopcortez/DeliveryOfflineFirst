@@ -9,3 +9,6 @@
 .cxx
 local.properties
 .kotlin
+
+# Firebase — contains API keys and project identifiers; never commit
+app/google-services.json

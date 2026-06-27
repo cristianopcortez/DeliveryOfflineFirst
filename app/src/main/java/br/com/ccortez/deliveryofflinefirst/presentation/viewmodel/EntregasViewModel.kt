@@ -12,7 +12,9 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import br.com.ccortez.deliveryofflinefirst.data.worker.SyncWorker
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
+import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
+import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -38,6 +40,7 @@ import javax.inject.Inject
 @HiltViewModel
 class EntregasViewModel @Inject constructor(
     private val repository: EntregaRepository,
+    private val nlpRepository: NlpRepository,
     @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -115,6 +118,58 @@ class EntregasViewModel @Inject constructor(
             // SharedFlow emits the event; the screen collects it via LaunchedEffect and shows the Snackbar
             _eventos.emit(EntregasEvent.ShowSnackbar("Entrega concluída. Sincronizará quando houver rede."))
             agendarSync()
+        }
+    }
+
+    /**
+     * Sends [comando] to the Gemini model and dispatches the result back into the
+     * existing ViewModel state/event channels so the UI reacts through normal UDF flow.
+     *
+     * SET_SEARCH_QUERY → injects the extracted term into [_searchQuery], which
+     *   immediately triggers the debounce + flatMapLatest reactive pipeline.
+     *
+     * CONCLUDE_DELIVERY → resolves the client name from [_uiState].entregas (the
+     *   source of truth already in memory) and delegates to [concluirEntrega].
+     *
+     * UNKNOWN → emits a one-shot snackbar event; the screen never crashes.
+     */
+    fun processarComandoNLP(comando: String) {
+        if (comando.isBlank()) return
+        viewModelScope.launch {
+            // Clear the reactive search immediately so the list shows all deliveries
+            // while the NLP request is in flight — the command text must not filter the list
+            _searchQuery.value = ""
+            _uiState.update { it.copy(isNlpLoading = true) }
+
+            val nlpCommand = nlpRepository.interpretarComando(comando)
+
+            // Loading ends as soon as the model responds — regardless of the action taken next
+            _uiState.update { it.copy(isNlpLoading = false) }
+
+            when (nlpCommand.action) {
+                NlpAction.SET_SEARCH_QUERY -> {
+                    nlpCommand.searchTerm?.let { onSearchQueryChange(it) }
+                }
+                NlpAction.CONCLUDE_DELIVERY -> {
+                    val entrega = _uiState.value.entregas.firstOrNull {
+                        it.cliente.equals(nlpCommand.targetClient, ignoreCase = true)
+                    }
+                    if (entrega != null) {
+                        concluirEntrega(entrega.id)
+                    } else {
+                        _eventos.emit(
+                            EntregasEvent.ShowSnackbar(
+                                "Cliente '${nlpCommand.targetClient}' não encontrado na lista."
+                            )
+                        )
+                    }
+                }
+                NlpAction.UNKNOWN -> {
+                    _eventos.emit(
+                        EntregasEvent.ShowSnackbar("Não entendi o comando ou houve um erro.")
+                    )
+                }
+            }
         }
     }
 
