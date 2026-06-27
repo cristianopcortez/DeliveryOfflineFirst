@@ -15,6 +15,7 @@ import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
+import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -41,6 +42,7 @@ import javax.inject.Inject
 class EntregasViewModel @Inject constructor(
     private val repository: EntregaRepository,
     private val nlpRepository: NlpRepository,
+    private val remoteConfigRepository: RemoteConfigRepository,
     @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -52,6 +54,11 @@ class EntregasViewModel @Inject constructor(
     // Key difference vs StateFlow: no current value, does not replay to new collectors
     private val _eventos = MutableSharedFlow<EntregasEvent>()
     val eventos = _eventos.asSharedFlow()
+
+    // Optimistic default: NLP stays on while Remote Config is being fetched.
+    // Updated once fetchRemoteConfig() completes; the UI reacts reactively.
+    private val _nlpEnabled = MutableStateFlow(true)
+    val nlpEnabled: StateFlow<Boolean> = _nlpEnabled.asStateFlow()
 
     // Search filter source as StateFlow (mutable internally, immutable externally)
     private val _searchQuery = MutableStateFlow("")
@@ -93,6 +100,27 @@ class EntregasViewModel @Inject constructor(
     init {
         popularBancoSeVazio()
         observarEntregas()
+        fetchRemoteConfig()
+    }
+
+    private fun fetchRemoteConfig() {
+        viewModelScope.launch {
+            _nlpEnabled.value = remoteConfigRepository.isNlpEnabled()
+        }
+    }
+
+    /**
+     * Option C: called by EntregasScreen whenever the lifecycle enters RESUMED
+     * (i.e. app comes back to foreground or user returns from Settings).
+     *
+     * In debug builds minimumFetchIntervalInSeconds = 0 (Option A), so this
+     * always goes to the server. In release it reads from the 1-hour cache,
+     * meaning no extra quota is consumed on every resume.
+     */
+    fun reloadRemoteConfig() {
+        viewModelScope.launch {
+            _nlpEnabled.value = remoteConfigRepository.isNlpEnabled()
+        }
     }
 
     private fun observarEntregas() {

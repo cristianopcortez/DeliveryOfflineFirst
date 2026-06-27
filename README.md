@@ -14,13 +14,13 @@ deliveryofflinefirst/
 │   ├── local/
 │   │   ├── datastore/  # SettingsConfig, SettingsSerializer, AppSettingsDataStore
 │   │   └── (room)      # EntregaEntity, EntregaDao, AppDatabase
-│   ├── repository/     # EntregaRepositoryImpl, NlpRepositoryImpl, SettingsRepositoryImpl + mappers
+│   ├── repository/     # EntregaRepositoryImpl, NlpRepositoryImpl, SettingsRepositoryImpl, RemoteConfigRepositoryImpl
 │   └── worker/         # SyncWorker (CoroutineWorker via Hilt)
 ├── di/                 # AppModule — Hilt SingletonComponent
 ├── domain/
 │   ├── model/          # Entrega (pure Kotlin, no Android deps)
 │   ├── nlp/            # NlpAction, NlpCommand, NlpPrompts (Gemini system instructions)
-│   └── repository/     # EntregaRepository, NlpRepository, SettingsRepository interfaces
+│   └── repository/     # EntregaRepository, NlpRepository, SettingsRepository, RemoteConfigRepository interfaces
 ├── navigation/         # AppNavigation — NavHost with Entregas + Settings routes
 └── presentation/
     ├── screen/         # EntregasScreen, SettingsScreen (stateless composables)
@@ -795,6 +795,115 @@ D DebugAppCheckProvider: Enter this debug secret into the Allow list in
 Register that token at **Firebase Console → Build → App Check → your Android app → Manage debug tokens**. Release builds require a [Play Integrity provider](https://firebase.google.com/docs/app-check/android/play-integrity-provider).
 
 > `google-services.json` is excluded from version control (`.gitignore`). Each developer must download their own file from the Firebase Console and place it in `app/` before building.
+
+---
+
+## Firebase Remote Config — feature flags
+
+### What it is and why it's here
+
+Firebase Remote Config stores key-value pairs in the cloud. The app fetches them at runtime and applies them without a Play Store update. This project uses a single boolean flag, `nlp_enabled`, to control whether the Gemini AI feature is active:
+
+| `nlp_enabled` in Firebase Console | Result in EntregasScreen |
+|---|---|
+| `true` (default) | Placeholder "Buscar ou descreva um comando de IA…", Send button visible, LinearProgressIndicator active |
+| `false` | Placeholder "Buscar entrega…", Send button hidden, progress bar hidden — field works as plain search |
+
+### Clean Architecture mapping
+
+```
+domain/repository/
+  RemoteConfigRepository.kt      ← suspend fun isNlpEnabled(): Boolean
+
+data/repository/
+  RemoteConfigRepositoryImpl.kt  ← fetchAndActivate() + getBoolean("nlp_enabled")
+                                    catches network failures → falls back to cached/default value
+
+di/
+  AppModule.kt                   ← @Singleton FirebaseRemoteConfig with in-app defaults
+                                    @Singleton RemoteConfigRepository
+
+presentation/viewmodel/
+  EntregasViewModel.kt           ← _nlpEnabled: MutableStateFlow<Boolean> (default true)
+                                    reloadRemoteConfig() — public, called by Option C
+  SettingsViewModel.kt           ← onReloadRemoteConfig() — triggered by Option B button
+
+presentation/screen/
+  EntregasScreen.kt              ← nlpEnabled: Boolean parameter → conditional rendering
+  SettingsScreen.kt              ← "Reload Remote Config" button + CircularProgressIndicator
+```
+
+### In-app default — fail-safe design
+
+The default value in code is `nlp_enabled = true`. If Firebase is unreachable on first install (no network), the NLP feature remains active. The flag disables only when Firebase explicitly returns `false` and the app successfully receives it.
+
+```kotlin
+// AppModule.kt
+setDefaultsAsync(mapOf(RemoteConfigRepositoryImpl.KEY_NLP_ENABLED to true))
+```
+
+### The 3-layer fetch strategy
+
+Remote Config values are cached by the Firebase SDK. Without any extra logic, changing a flag in the console requires killing the app to see the effect. Three complementary mechanisms solve this at different layers:
+
+#### Option A — Zero cache in debug (`minimumFetchIntervalInSeconds`)
+
+```kotlin
+// AppModule.kt
+remoteConfigSettings {
+    minimumFetchIntervalInSeconds = if (BuildConfig.DEBUG) 0L else 3600L
+}
+```
+
+In debug builds, every `fetchAndActivate()` call goes directly to the Firebase server — no local cache blocks it. In release, the interval is 1 hour to respect Firebase's free-tier quota (default is 12 hours). This does not add a new trigger; it makes existing triggers always return fresh values during development.
+
+#### Option B — Manual reload button in SettingsScreen
+
+```kotlin
+// SettingsViewModel.kt
+fun onReloadRemoteConfig() {
+    viewModelScope.launch {
+        _uiState.update { it.copy(isReloadingConfig = true) }
+        val nlpEnabled = remoteConfigRepository.isNlpEnabled()   // fetchAndActivate()
+        _uiState.update { it.copy(isReloadingConfig = false) }
+        val status = if (nlpEnabled) "enabled" else "disabled"
+        _eventos.emit(SettingsEvent.ShowSnackbar("Remote Config updated — NLP is $status"))
+    }
+}
+```
+
+The "Reload Remote Config" button in `SettingsScreen` shows a `CircularProgressIndicator` while the fetch is in flight and a Snackbar with the result. The fetch activates the new value in the Firebase SDK's in-memory cache — when the user navigates back to `EntregasScreen`, Option C picks it up immediately without a second network call.
+
+#### Option C — Automatic re-fetch on foreground (`repeatOnLifecycle`)
+
+```kotlin
+// EntregasScreen.kt
+val lifecycleOwner = LocalLifecycleOwner.current
+LaunchedEffect(lifecycleOwner) {
+    lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        viewModel.reloadRemoteConfig()   // re-reads from cache or server
+    }
+}
+```
+
+`repeatOnLifecycle(RESUMED)` restarts its block every time the screen enters the `RESUMED` state and cancels it on `PAUSED`. This covers two scenarios automatically:
+
+- **App returned from background** — user switched to another app, a console change was made, and the user came back: `reloadRemoteConfig()` runs and `_nlpEnabled` updates reactively.
+- **Returned from SettingsScreen** — Option B activated the values; Option C reads the now-warm cache and propagates the result to the UI with no extra network round-trip.
+
+### How all 3 work together — demo sequence
+
+```
+1. Open the app                            → init fetchRemoteConfig()  [nlp_enabled=true]
+2. Navigate to Settings → tap "Reload"     → Option B: fetchAndActivate() → snackbar "NLP is disabled"
+                                             (Firebase SDK cache now has nlp_enabled=false)
+3. Navigate back to EntregasScreen         → Option C fires on RESUMED
+                                             → reads activated cache (nlp_enabled=false)
+                                             → _nlpEnabled.value = false
+                                             → Send button disappears, placeholder changes
+```
+
+In debug (Option A active), step 2 always hits the server regardless of the 1-hour interval.
 
 ---
 

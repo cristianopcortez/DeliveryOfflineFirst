@@ -34,9 +34,11 @@ fun AppNavigation(
     ) {
         composable(Routes.ENTREGAS) {
             val entregasViewModel: EntregasViewModel = hiltViewModel()
+            val nlpEnabled by entregasViewModel.nlpEnabled.collectAsStateWithLifecycle()
             EntregasScreen(
                 viewModel = entregasViewModel,
                 motoristaNome = settingsState.motoristaNome,
+                nlpEnabled = nlpEnabled,
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) }
             )
         }

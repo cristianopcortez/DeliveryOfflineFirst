@@ -8,12 +8,18 @@ import br.com.ccortez.deliveryofflinefirst.data.local.datastore.SettingsConfig
 import br.com.ccortez.deliveryofflinefirst.data.local.datastore.settingsDataStore
 import br.com.ccortez.deliveryofflinefirst.data.repository.EntregaRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.NlpRepositoryImpl
+import br.com.ccortez.deliveryofflinefirst.data.repository.RemoteConfigRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.SettingsRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpPrompts
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
+import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
+import br.com.ccortez.deliveryofflinefirst.BuildConfig
 import com.google.firebase.Firebase
+import com.google.firebase.remoteconfig.FirebaseRemoteConfig
+import com.google.firebase.remoteconfig.remoteConfig
+import com.google.firebase.remoteconfig.remoteConfigSettings
 import com.google.firebase.ai.GenerativeModel
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.GenerativeBackend
@@ -81,4 +87,30 @@ object AppModule {
     @Singleton
     fun provideNlpRepository(model: GenerativeModel): NlpRepository =
         NlpRepositoryImpl(model)
+
+    /**
+     * Provides a FirebaseRemoteConfig instance with in-app defaults.
+     *
+     * Default nlp_enabled = true: the feature stays on until Firebase explicitly disables it.
+     * minimumFetchIntervalInSeconds = 3600: allows at most one fresh fetch per hour in production.
+     * In debug builds you can lower this to 0 for fast iteration without affecting the release quota.
+     */
+    @Provides
+    @Singleton
+    fun provideFirebaseRemoteConfig(): FirebaseRemoteConfig =
+        Firebase.remoteConfig.apply {
+            setConfigSettingsAsync(
+                remoteConfigSettings {
+                    // Option A: bypass the 12-hour cache in debug so every fetchAndActivate()
+                    // goes to the server immediately — no need to kill the app to see changes.
+                    minimumFetchIntervalInSeconds = if (BuildConfig.DEBUG) 0L else 3600L
+                }
+            )
+            setDefaultsAsync(mapOf(RemoteConfigRepositoryImpl.KEY_NLP_ENABLED to true))
+        }
+
+    @Provides
+    @Singleton
+    fun provideRemoteConfigRepository(remoteConfig: FirebaseRemoteConfig): RemoteConfigRepository =
+        RemoteConfigRepositoryImpl(remoteConfig)
 }

@@ -2,6 +2,7 @@ package br.com.ccortez.deliveryofflinefirst.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -15,7 +16,8 @@ import javax.inject.Inject
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val remoteConfigRepository: RemoteConfigRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -52,6 +54,24 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             settingsRepository.updateMotoristaNome(_uiState.value.nomeEditado)
             _eventos.emit(SettingsEvent.ShowSnackbar("Settings saved"))
+        }
+    }
+
+    /**
+     * Option B: manual reload triggered from the Settings UI.
+     *
+     * Calls fetchAndActivate() so the Firebase SDK pulls the latest Remote Config
+     * values and activates them in-memory. When the user navigates back to
+     * EntregasScreen, Option C (repeatOnLifecycle RESUMED) reads the activated
+     * cache and updates nlpEnabled without another network round-trip.
+     */
+    fun onReloadRemoteConfig() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isReloadingConfig = true) }
+            val nlpEnabled = remoteConfigRepository.isNlpEnabled()
+            _uiState.update { it.copy(isReloadingConfig = false) }
+            val status = if (nlpEnabled) "enabled" else "disabled"
+            _eventos.emit(SettingsEvent.ShowSnackbar("Remote Config updated — NLP is $status"))
         }
     }
 }

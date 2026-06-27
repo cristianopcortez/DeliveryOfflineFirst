@@ -15,9 +15,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -44,6 +44,9 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +73,7 @@ fun EntregasScreen(
     viewModel: EntregasViewModel,
     modifier: Modifier = Modifier,
     motoristaNome: String = "Motorista",
+    nlpEnabled: Boolean = true,
     onNavigateToSettings: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -123,6 +127,17 @@ fun EntregasScreen(
         }
     }
 
+    // Option C: re-fetch Remote Config every time the screen enters RESUMED state.
+    // This picks up any value activated by Option B (Reload button in Settings)
+    // or any console change that happened while the app was in the background.
+    // repeatOnLifecycle restarts the block on each RESUMED entry and cancels on PAUSED.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            viewModel.reloadRemoteConfig()
+        }
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
@@ -171,25 +186,30 @@ fun EntregasScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = viewModel::onSearchQueryChange,
-                placeholder = { Text("Buscar ou descreva um comando de IA...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    IconButton(
-                        onClick = { viewModel.processarComandoNLP(searchQuery) },
-                        // Disabled while the AI is processing or if the field is empty
-                        enabled = searchQuery.isNotBlank() && !state.isNlpLoading
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Send,
-                            contentDescription = "Enviar comando para IA"
-                        )
-                    }
+                placeholder = {
+                    Text(
+                        if (nlpEnabled) "Buscar ou descreva um comando de IA..."
+                        else "Buscar entrega..."
+                    )
                 },
-                // ImeAction.Search lets the soft keyboard show a Search/Go button
-                // that also triggers processarComandoNLP without tapping the icon
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = if (nlpEnabled) {
+                    {
+                        IconButton(
+                            onClick = { viewModel.processarComandoNLP(searchQuery) },
+                            enabled = searchQuery.isNotBlank() && !state.isNlpLoading
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Enviar comando para IA"
+                            )
+                        }
+                    }
+                } else null,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                // ImeAction.Search triggers NLP only when the feature flag is on
                 keyboardActions = KeyboardActions(
-                    onSearch = { viewModel.processarComandoNLP(searchQuery) }
+                    onSearch = { if (nlpEnabled) viewModel.processarComandoNLP(searchQuery) }
                 ),
                 singleLine = true,
                 modifier = Modifier
@@ -198,9 +218,8 @@ fun EntregasScreen(
                     .testTag("campo_busca")
             )
 
-            // Indeterminate bar that replaces the 8dp gap below the field while the
-            // model is running — no extra vertical layout shift
-            if (state.isNlpLoading) {
+            // Indeterminate bar shown only while NLP is enabled AND the model is running
+            if (nlpEnabled && state.isNlpLoading) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
