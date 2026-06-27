@@ -14,12 +14,13 @@ deliveryofflinefirst/
 │   ├── local/
 │   │   ├── datastore/  # SettingsConfig, SettingsSerializer, AppSettingsDataStore
 │   │   └── (room)      # EntregaEntity, EntregaDao, AppDatabase
-│   ├── repository/     # EntregaRepositoryImpl, SettingsRepositoryImpl + mappers
+│   ├── repository/     # EntregaRepositoryImpl, NlpRepositoryImpl, SettingsRepositoryImpl + mappers
 │   └── worker/         # SyncWorker (CoroutineWorker via Hilt)
 ├── di/                 # AppModule — Hilt SingletonComponent
 ├── domain/
 │   ├── model/          # Entrega (pure Kotlin, no Android deps)
-│   └── repository/     # EntregaRepository, SettingsRepository interfaces
+│   ├── nlp/            # NlpAction, NlpCommand, NlpPrompts (Gemini system instructions)
+│   └── repository/     # EntregaRepository, NlpRepository, SettingsRepository interfaces
 ├── navigation/         # AppNavigation — NavHost with Entregas + Settings routes
 └── presentation/
     ├── screen/         # EntregasScreen, SettingsScreen (stateless composables)
@@ -682,6 +683,121 @@ The app demonstrates the exact scenario from the script:
 
 ---
 
+## AI Assistant — Natural Language Delivery Commands
+
+### Overview
+
+The app exposes a single text field in `EntregasScreen` that accepts both traditional text search (reactive, debounced) and free-text natural language commands processed by **Gemini 2.5 Flash** via **Firebase AI Logic**.
+
+```
+User types a command
+        ↓
+processarComandoNLP(comando)     ← EntregasViewModel
+        ↓
+NlpRepository.interpretarComando()
+        ↓
+Gemini 2.5 Flash (Firebase AI Logic, Google AI backend)
+  systemInstruction = NlpPrompts.DELIVERY_ASSISTANT_SYSTEM_PROMPT
+  responseMimeType  = "application/json"
+        ↓
+Raw JSON response  →  Json.decodeFromString<NlpCommand>()
+        ↓
+NlpCommand(action, searchTerm?, targetClient?)
+        ↓
+when(action) {
+  SET_SEARCH_QUERY   → onSearchQueryChange(searchTerm)   — feeds reactive pipeline
+  CONCLUDE_DELIVERY  → resolve id from uiState.entregas  → concluirEntrega(id)
+  UNKNOWN            → ShowSnackbar("Não entendi o comando ou houve um erro.")
+}
+```
+
+### Clean Architecture mapping
+
+```
+domain/nlp/
+  NlpAction.kt          ← enum: SET_SEARCH_QUERY | CONCLUDE_DELIVERY | UNKNOWN
+  NlpCommand.kt         ← @Serializable data class (kotlinx.serialization)
+  NlpPrompts.kt         ← system instructions constant
+
+domain/repository/
+  NlpRepository.kt      ← suspend fun interpretarComando(comando: String): NlpCommand
+
+data/repository/
+  NlpRepositoryImpl.kt  ← calls GenerativeModel, parses JSON, always returns safe NlpCommand
+
+di/
+  AppModule.kt          ← @Singleton GenerativeModel + NlpRepository providers
+```
+
+### System Prompt design
+
+The system prompt (`NlpPrompts.DELIVERY_ASSISTANT_SYSTEM_PROMPT`) is written in English — LLMs follow structured instructions with higher fidelity in English while still processing Portuguese user input normally. Key constraints enforced:
+
+- Output **only** a raw JSON object — no markdown fences, no prose
+- `responseMimeType = "application/json"` at the SDK level adds a second enforcement layer
+- Three-shot examples are embedded in the prompt to anchor the model to the delivery domain before the first real input
+
+### Supported actions and example commands
+
+#### `SET_SEARCH_QUERY` — filter the delivery list
+
+| User input | Extracted `search_term` | Effect |
+|---|---|---|
+| `"pesquisar entregas na Av. Brasil"` | `"Av. Brasil"` | Filters list to Carlos Lima |
+| `"vê o que tem pra Ana Paula"` | `"Ana Paula"` | Filters list to Ana Paula |
+| `"buscar João"` | `"João"` | Filters by name fragment |
+
+The extracted `search_term` is injected directly into `_searchQuery`, triggering the existing `debounce(300) + distinctUntilChanged + flatMapLatest` reactive pipeline.
+
+#### `CONCLUDE_DELIVERY` — mark a delivery as done
+
+| User input | Extracted `target_client` | Effect |
+|---|---|---|
+| `"finalizar a entrega da Ana Paula"` | `"Ana Paula"` | Calls `concluirEntrega("1")` |
+| `"concluir entrega do Carlos Lima"` | `"Carlos Lima"` | Calls `concluirEntrega("2")` |
+| `"marcar entrega da Ana Paula como concluída"` | `"Ana Paula"` | Same as above |
+| `"fechar a entrega da Ana Paula"` | `"Ana Paula"` | Same as above |
+
+The model returns the client name; the ViewModel resolves the `id` from `uiState.entregas` using a case-insensitive `firstOrNull` match before calling `concluirEntrega(id)`. The name must be reasonably close to the value in the `cliente` field — full name matches are most reliable.
+
+#### `UNKNOWN` — unrecognised command
+
+Any input that doesn't match a delivery intent (e.g. `"qual o horário de funcionamento?"`) returns `{"action":"UNKNOWN"}` and a Snackbar is shown: *"Não entendi o comando ou houve um erro."*
+
+### UX details
+
+- The **Send button (▷)** and **IME Search key** both trigger `processarComandoNLP()`.
+- The button is disabled while `isNlpLoading = true` to prevent double submissions.
+- `_searchQuery` is reset to `""` immediately on Send so the reactive filter does not hide the delivery list while the model is processing.
+- A `LinearProgressIndicator` replaces the bottom spacer below the search field during loading — no layout shift.
+
+### Error handling
+
+`NlpRepositoryImpl` has a three-level catch strategy and **never throws** to the caller:
+
+| Exception | Cause | Result |
+|---|---|---|
+| `SerializationException` | Model returned non-JSON text | `NlpCommand(UNKNOWN)` + `Log.w` |
+| `Exception` (generic) | Network timeout, App Check failure, API quota | `NlpCommand(UNKNOWN)` + `Log.w` |
+| `response.text == null` | Empty model response | `NlpCommand(UNKNOWN)` + `Log.w` |
+
+Filter Logcat by tag `NlpRepositoryImpl` to diagnose failures during development.
+
+### Firebase App Check (debug builds)
+
+Firebase AI Logic enforces App Check. In debug builds, `DebugAppCheckProviderFactory` is installed in `DeliveryApplication.onCreate()`. On first run, it prints a one-time UUID to Logcat:
+
+```
+D DebugAppCheckProvider: Enter this debug secret into the Allow list in
+  the Firebase Console for your project: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+```
+
+Register that token at **Firebase Console → Build → App Check → your Android app → Manage debug tokens**. Release builds require a [Play Integrity provider](https://firebase.google.com/docs/app-check/android/play-integrity-provider).
+
+> `google-services.json` is excluded from version control (`.gitignore`). Each developer must download their own file from the Firebase Console and place it in `app/` before building.
+
+---
+
 ## Key dependency versions
 
 | Library | Version |
@@ -689,6 +805,7 @@ The app demonstrates the exact scenario from the script:
 | Kotlin | 2.0.21 |
 | AGP | 9.0.1 |
 | Compose BOM | 2024.09.00 |
+| Firebase BOM | 34.15.0 |
 | Hilt | 2.59.2 |
 | Room | 2.7.1 |
 | WorkManager | 2.10.1 |
