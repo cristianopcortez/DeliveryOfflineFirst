@@ -13,9 +13,12 @@ import androidx.work.WorkManager
 import br.com.ccortez.deliveryofflinefirst.data.worker.SyncWorker
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
+import br.com.ccortez.deliveryofflinefirst.data.repository.AnalyticsRepositoryImpl
+import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
+import android.util.Log
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -43,6 +46,7 @@ class EntregasViewModel @Inject constructor(
     private val repository: EntregaRepository,
     private val nlpRepository: NlpRepository,
     private val remoteConfigRepository: RemoteConfigRepository,
+    private val analyticsRepository: AnalyticsRepository,
     @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -105,7 +109,16 @@ class EntregasViewModel @Inject constructor(
 
     private fun fetchRemoteConfig() {
         viewModelScope.launch {
-            _nlpEnabled.value = remoteConfigRepository.isNlpEnabled()
+            Log.d(TAG, "fetchRemoteConfig → calling remoteConfigRepository.isNlpEnabled() [trigger=init]")
+            val enabled = remoteConfigRepository.isNlpEnabled()
+            Log.d(TAG, "fetchRemoteConfig → isNlpEnabled() returned: $enabled — proceeding to Analytics")
+            _nlpEnabled.value = enabled
+            analyticsRepository.setNlpFeatureUserProperty(enabled)
+            analyticsRepository.logNlpConfigFetched(
+                nlpEnabled = enabled,
+                trigger = AnalyticsRepositoryImpl.TRIGGER_INIT
+            )
+            Log.d(TAG, "fetchRemoteConfig → Analytics tagged successfully [trigger=init]")
         }
     }
 
@@ -119,7 +132,16 @@ class EntregasViewModel @Inject constructor(
      */
     fun reloadRemoteConfig() {
         viewModelScope.launch {
-            _nlpEnabled.value = remoteConfigRepository.isNlpEnabled()
+            Log.d(TAG, "reloadRemoteConfig → calling remoteConfigRepository.isNlpEnabled() [trigger=resume]")
+            val enabled = remoteConfigRepository.isNlpEnabled()
+            Log.d(TAG, "reloadRemoteConfig → isNlpEnabled() returned: $enabled — proceeding to Analytics")
+            _nlpEnabled.value = enabled
+            analyticsRepository.setNlpFeatureUserProperty(enabled)
+            analyticsRepository.logNlpConfigFetched(
+                nlpEnabled = enabled,
+                trigger = AnalyticsRepositoryImpl.TRIGGER_RESUME
+            )
+            Log.d(TAG, "reloadRemoteConfig → Analytics tagged successfully [trigger=resume]")
         }
     }
 
@@ -168,6 +190,7 @@ class EntregasViewModel @Inject constructor(
             // while the NLP request is in flight — the command text must not filter the list
             _searchQuery.value = ""
             _uiState.update { it.copy(isNlpLoading = true) }
+            analyticsRepository.logNlpCommandSubmitted()
 
             val nlpCommand = nlpRepository.interpretarComando(comando)
 
@@ -177,6 +200,10 @@ class EntregasViewModel @Inject constructor(
             when (nlpCommand.action) {
                 NlpAction.SET_SEARCH_QUERY -> {
                     nlpCommand.searchTerm?.let { onSearchQueryChange(it) }
+                    analyticsRepository.logNlpCommandResult(
+                        action = AnalyticsRepositoryImpl.ACTION_SET_SEARCH_QUERY,
+                        success = true
+                    )
                 }
                 NlpAction.CONCLUDE_DELIVERY -> {
                     val entrega = _uiState.value.entregas.firstOrNull {
@@ -184,17 +211,29 @@ class EntregasViewModel @Inject constructor(
                     }
                     if (entrega != null) {
                         concluirEntrega(entrega.id)
+                        analyticsRepository.logNlpCommandResult(
+                            action = AnalyticsRepositoryImpl.ACTION_CONCLUDE_DELIVERY,
+                            success = true
+                        )
                     } else {
                         _eventos.emit(
                             EntregasEvent.ShowSnackbar(
                                 "Cliente '${nlpCommand.targetClient}' não encontrado na lista."
                             )
                         )
+                        analyticsRepository.logNlpCommandResult(
+                            action = AnalyticsRepositoryImpl.ACTION_CONCLUDE_DELIVERY,
+                            success = false
+                        )
                     }
                 }
                 NlpAction.UNKNOWN -> {
                     _eventos.emit(
                         EntregasEvent.ShowSnackbar("Não entendi o comando ou houve um erro.")
+                    )
+                    analyticsRepository.logNlpCommandResult(
+                        action = AnalyticsRepositoryImpl.ACTION_UNKNOWN,
+                        success = false
                     )
                 }
             }
@@ -223,6 +262,8 @@ class EntregasViewModel @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "DEBUG_OFFLINE_FIRST"
+
         private val entregasSeed = listOf(
             Entrega("1", "Ana Paula", "Rua das Flores, 123", "Pendente"),
             Entrega("2", "Carlos Lima", "Av. Brasil, 456", "Em rota"),

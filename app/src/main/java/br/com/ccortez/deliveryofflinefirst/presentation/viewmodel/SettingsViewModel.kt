@@ -2,6 +2,8 @@ package br.com.ccortez.deliveryofflinefirst.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import br.com.ccortez.deliveryofflinefirst.data.repository.AnalyticsRepositoryImpl
+import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -17,7 +19,8 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
-    private val remoteConfigRepository: RemoteConfigRepository
+    private val remoteConfigRepository: RemoteConfigRepository,
+    private val analyticsRepository: AnalyticsRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -70,6 +73,11 @@ class SettingsViewModel @Inject constructor(
             _uiState.update { it.copy(isReloadingConfig = true) }
             val nlpEnabled = remoteConfigRepository.isNlpEnabled()
             _uiState.update { it.copy(isReloadingConfig = false) }
+            analyticsRepository.setNlpFeatureUserProperty(nlpEnabled)
+            analyticsRepository.logNlpConfigFetched(
+                nlpEnabled = nlpEnabled,
+                trigger = AnalyticsRepositoryImpl.TRIGGER_MANUAL_RELOAD
+            )
             val status = if (nlpEnabled) "enabled" else "disabled"
             _eventos.emit(SettingsEvent.ShowSnackbar("Remote Config updated — NLP is $status"))
         }

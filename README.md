@@ -14,13 +14,13 @@ deliveryofflinefirst/
 │   ├── local/
 │   │   ├── datastore/  # SettingsConfig, SettingsSerializer, AppSettingsDataStore
 │   │   └── (room)      # EntregaEntity, EntregaDao, AppDatabase
-│   ├── repository/     # EntregaRepositoryImpl, NlpRepositoryImpl, SettingsRepositoryImpl, RemoteConfigRepositoryImpl
+│   ├── repository/     # EntregaRepositoryImpl, NlpRepositoryImpl, SettingsRepositoryImpl, RemoteConfigRepositoryImpl, AnalyticsRepositoryImpl
 │   └── worker/         # SyncWorker (CoroutineWorker via Hilt)
 ├── di/                 # AppModule — Hilt SingletonComponent
 ├── domain/
 │   ├── model/          # Entrega (pure Kotlin, no Android deps)
 │   ├── nlp/            # NlpAction, NlpCommand, NlpPrompts (Gemini system instructions)
-│   └── repository/     # EntregaRepository, NlpRepository, SettingsRepository, RemoteConfigRepository interfaces
+│   └── repository/     # EntregaRepository, NlpRepository, SettingsRepository, RemoteConfigRepository, AnalyticsRepository interfaces
 ├── navigation/         # AppNavigation — NavHost with Entregas + Settings routes
 └── presentation/
     ├── screen/         # EntregasScreen, SettingsScreen (stateless composables)
@@ -44,6 +44,9 @@ deliveryofflinefirst/
 | Background sync | WorkManager |
 | Architecture | Clean Architecture + MVVM |
 | Language | Kotlin 2.0 |
+| Feature flags | Firebase Remote Config |
+| AI assistant | Firebase AI Logic (Gemini 2.5 Flash) |
+| Adoption tracking | Firebase Analytics |
 
 ---
 
@@ -904,6 +907,317 @@ LaunchedEffect(lifecycleOwner) {
 ```
 
 In debug (Option A active), step 2 always hits the server regardless of the 1-hour interval.
+
+---
+
+## Firebase Analytics — NLP Adoption Tracking
+
+### What it measures and why
+
+Adding Firebase Analytics alongside Remote Config closes the feedback loop: instead of only being able to turn the `nlp_enabled` flag on or off, the team can now see **how many users received each value**, **how many actually used the feature**, and **how successful each AI command was** — all broken down by device, country, and app version in the Firebase console.
+
+### Clean Architecture mapping
+
+```
+domain/repository/
+  AnalyticsRepository.kt       ← interface (no Android/Firebase imports)
+                                  logNlpConfigFetched(nlpEnabled, trigger)
+                                  logNlpCommandSubmitted()
+                                  logNlpCommandResult(action, success)
+                                  setNlpFeatureUserProperty(enabled)
+
+data/repository/
+  AnalyticsRepositoryImpl.kt   ← wraps FirebaseAnalytics; converts calls to logEvent() + Bundle
+
+di/
+  AppModule.kt                 ← @Singleton FirebaseAnalytics.getInstance(context)
+                                  @Singleton AnalyticsRepository
+
+presentation/viewmodel/
+  EntregasViewModel.kt         ← injects AnalyticsRepository; fires events on config fetch and NLP commands
+  SettingsViewModel.kt         ← fires event on manual Remote Config reload
+
+data/worker/
+  SyncWorker.kt                ← injects AnalyticsRepository; fires sync_completed after outbox is drained
+```
+
+Keeping analytics behind an interface means ViewModels remain unit-testable: tests inject a no-op fake instead of a real `FirebaseAnalytics` instance.
+
+### Events
+
+| Event name | Where it fires | Parameters | What it answers |
+|---|---|---|---|
+| `nlp_config_fetched` | Every Remote Config fetch | `nlp_enabled` ("true"/"false"), `trigger` | How many users have the flag on vs off? How is it being triggered? |
+| `nlp_command_submitted` | User taps Send / presses Search | — | How many users actively try the AI feature? |
+| `nlp_command_result` | After Gemini responds | `action` (set_search_query / conclude_delivery / unknown), `success` ("true"/"false") | What commands succeed? What fails? |
+| `sync_completed` | `SyncWorker` drains the outbox successfully | `quantity` (Long) | How healthy is the offline-first architecture? How many deliveries accumulate offline? |
+
+#### `trigger` values for `nlp_config_fetched`
+
+| Value | Meaning |
+|---|---|
+| `init` | First fetch on ViewModel creation (app cold start) |
+| `resume` | Re-fetch when `EntregasScreen` re-enters `RESUMED` state (Option C) |
+| `manual_reload` | User tapped "Reload Remote Config" in Settings (Option B) |
+
+### User property
+
+```kotlin
+analytics.setUserProperty("nlp_feature_enabled", "true") // or "false"
+```
+
+`nlp_feature_enabled` is a **persistent user property** — once set, it is attached to every subsequent Analytics event from that device for the entire session, even events that have nothing to do with Remote Config. This allows audience-based filtering in GA4 / BigQuery without post-hoc event joins.
+
+The property is updated every time a Remote Config fetch completes (init, resume, and manual reload), so it always reflects the most recently activated value.
+
+### Code — where each event is dispatched
+
+#### Remote Config fetch (init and resume) — `EntregasViewModel`
+
+```kotlin
+private fun fetchRemoteConfig() {
+    viewModelScope.launch {
+        val enabled = remoteConfigRepository.isNlpEnabled()
+        _nlpEnabled.value = enabled
+        analyticsRepository.setNlpFeatureUserProperty(enabled)         // persists across the session
+        analyticsRepository.logNlpConfigFetched(
+            nlpEnabled = enabled,
+            trigger = AnalyticsRepositoryImpl.TRIGGER_INIT             // "init"
+        )
+    }
+}
+
+fun reloadRemoteConfig() {
+    viewModelScope.launch {
+        val enabled = remoteConfigRepository.isNlpEnabled()
+        _nlpEnabled.value = enabled
+        analyticsRepository.setNlpFeatureUserProperty(enabled)
+        analyticsRepository.logNlpConfigFetched(
+            nlpEnabled = enabled,
+            trigger = AnalyticsRepositoryImpl.TRIGGER_RESUME           // "resume"
+        )
+    }
+}
+```
+
+#### Manual reload — `SettingsViewModel`
+
+```kotlin
+fun onReloadRemoteConfig() {
+    viewModelScope.launch {
+        val nlpEnabled = remoteConfigRepository.isNlpEnabled()
+        analyticsRepository.setNlpFeatureUserProperty(nlpEnabled)
+        analyticsRepository.logNlpConfigFetched(
+            nlpEnabled = nlpEnabled,
+            trigger = AnalyticsRepositoryImpl.TRIGGER_MANUAL_RELOAD    // "manual_reload"
+        )
+    }
+}
+```
+
+#### NLP command lifecycle — `EntregasViewModel`
+
+```kotlin
+fun processarComandoNLP(comando: String) {
+    viewModelScope.launch {
+        analyticsRepository.logNlpCommandSubmitted()   // counts raw intent
+
+        val nlpCommand = nlpRepository.interpretarComando(comando)
+
+        when (nlpCommand.action) {
+            NlpAction.SET_SEARCH_QUERY -> {
+                analyticsRepository.logNlpCommandResult(
+                    action = AnalyticsRepositoryImpl.ACTION_SET_SEARCH_QUERY,
+                    success = true
+                )
+            }
+            NlpAction.CONCLUDE_DELIVERY -> {
+                val found = resolveDelivery(nlpCommand.targetClient)
+                analyticsRepository.logNlpCommandResult(
+                    action = AnalyticsRepositoryImpl.ACTION_CONCLUDE_DELIVERY,
+                    success = found != null    // false if client name not in list
+                )
+            }
+            NlpAction.UNKNOWN -> {
+                analyticsRepository.logNlpCommandResult(
+                    action = AnalyticsRepositoryImpl.ACTION_UNKNOWN,
+                    success = false
+                )
+            }
+        }
+    }
+}
+```
+
+#### Offline sync — `SyncWorker`
+
+```kotlin
+// SyncWorker.kt — fired once the entire outbox batch is confirmed
+pendentes.forEach { entrega ->
+    repository.marcarSincronizadaPorUuid(entrega.uuid)   // ACK per delivery
+}
+analyticsRepository.logSyncCompleted(quantity = pendentes.size)
+Result.success()
+```
+
+The event fires **only on the happy path** — after every delivery in the batch has been individually acknowledged and marked in Room, and before `Result.success()`. Retries and simulated network failures never produce this event, so the data is always clean.
+
+The `quantity` parameter is a **Long** sent via `putLong()`. Firebase Analytics stores it as a numeric value, which means it must be registered in the console as a **Custom Metric** (not a Custom Dimension) so that aggregation functions (sum, average, max) work correctly.
+
+> **Firebase Console → Analytics → Custom Definitions → Custom Metrics → Create**  
+> Name: `Entregas Sincronizadas` | Scope: `Event` | Event parameter: `quantity` | Unit: `Standard`
+
+### What `sync_completed` + `quantity` measure in practice
+
+The event connects Firebase Analytics to the health of the offline-first architecture. Each time `SyncWorker` successfully drains the outbox, Analytics receives a data point that answers questions that no other signal in the app can answer:
+
+| Question | How `sync_completed` answers it |
+|---|---|
+| **How often does the app go offline?** | Event frequency over time — a spike means users were offline more than usual in that period |
+| **How many deliveries accumulate before reconnecting?** | Average of `quantity` — a growing average signals users are spending longer offline between syncs |
+| **Are there users with extreme offline usage?** | Max of `quantity` — outliers with large batches reveal heavy field scenarios worth stress-testing |
+| **Is the WorkManager retry mechanism causing duplicate events?** | Each sync session should produce exactly one event; more than one per session indicates a crash-retry cycle reached success |
+| **Does the outbox grow at a sustainable rate?** | `SUM(quantity)` per day vs number of active sessions — the ratio shows how much write pressure the sync pipeline is under |
+
+#### Event dispatch flow inside `SyncWorker`
+
+```
+doWork()
+  ├── pendentes.isEmpty()
+  │     └── Result.success()            ← no event: nothing was in the outbox
+  │
+  ├── Random.nextFloat() < 0.3f
+  │     └── Result.retry()              ← no event: sync did not complete
+  │
+  └── happy path
+        ├── forEach { marcarSincronizadaPorUuid(uuid) }
+        ├── logSyncCompleted(quantity = pendentes.size)   ← event fires here
+        └── Result.success()
+```
+
+This placement guarantees that `quantity` always equals the exact number of deliveries that made it to the server — partial batches (due to per-entry exceptions) would not reach this line.
+
+#### BigQuery — querying offline-first health
+
+```sql
+-- Average and max batch size per day (measures offline accumulation)
+SELECT
+  DATE(event_timestamp / 1000000, "America/Sao_Paulo") AS day,
+  COUNT(*)                                              AS sync_sessions,
+  ROUND(AVG(
+    (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'quantity')
+  ), 1)                                                 AS avg_deliveries_per_sync,
+  MAX(
+    (SELECT value.int_value FROM UNNEST(event_params) WHERE key = 'quantity')
+  )                                                     AS max_deliveries_per_sync
+FROM
+  `your_project.analytics_XXXXXXXX.events_*`
+WHERE
+  event_name = 'sync_completed'
+GROUP BY day
+ORDER BY day DESC;
+```
+
+---
+
+### Audience: NLP Adopters (`nlp_feature_enabled = "true"`)
+
+An **audience** in Firebase Analytics is a saved segment of users who share one or more conditions. Once created, it appears as a dimension in all Analytics reports and can be used to target Remote Config, A/B tests, and push notifications.
+
+#### How to create the "NLP Adopters" audience in the Firebase Console
+
+1. Open **Firebase Console → Analytics → Audiences → New audience**
+2. Set the audience name to `NLP Adopters`
+3. Add condition: **User property** → `nlp_feature_enabled` → **exactly matches (=)** → `true`
+4. Click **Save**
+
+Firebase starts computing membership immediately. Users who matched the condition in the last 30 days (the default lookback window) are included automatically.
+
+```
+Firebase Console
+└── Analytics
+    └── Audiences
+        └── NLP Adopters
+              Condition: user_property[nlp_feature_enabled] = "true"
+              Lookback window: 30 days (default)
+```
+
+#### What you can do with the "NLP Adopters" audience
+
+| Use case | How |
+|---|---|
+| View adoption over time | Analytics → Events → `nlp_config_fetched` → filter by `nlp_enabled = true` |
+| Compare behavior | All reports → Audience comparison: NLP Adopters vs (not NLP Adopters) |
+| A/B test the feature | Remote Config → A/B test → target audience: NLP Adopters |
+| Push notifications to adopters | Firebase Messaging → target audience: NLP Adopters |
+| Measure usage rate within adopters | Funnel: `nlp_config_fetched (true)` → `nlp_command_submitted` |
+
+#### Adoption funnel — reading the data
+
+```
+nlp_config_fetched  (nlp_enabled = "true")     ← total users with the flag ON
+         │
+         ▼
+nlp_command_submitted                           ← users who tried the AI feature at least once
+         │
+         ▼
+nlp_command_result  (success = "true")          ← users who got a successful AI response
+```
+
+Create this funnel at **Analytics → Funnels → New funnel**:
+
+| Step | Event | Filter |
+|---|---|---|
+| 1 | `nlp_config_fetched` | `nlp_enabled` = `true` |
+| 2 | `nlp_command_submitted` | — |
+| 3 | `nlp_command_result` | `success` = `true` |
+
+The funnel shows conversion rates between steps. A large drop between steps 1 and 2 means users have the feature but are not discovering it — a UX problem. A large drop between steps 2 and 3 means the AI commands are failing often — a quality problem.
+
+#### BigQuery export — querying adoption directly
+
+If BigQuery export is enabled in the Firebase project, the same data is available as SQL:
+
+```sql
+-- Daily count of users who received nlp_enabled = true
+SELECT
+  DATE(event_timestamp / 1000000, "America/Sao_Paulo") AS day,
+  COUNT(DISTINCT user_pseudo_id)                        AS adopters
+FROM
+  `your_project.analytics_XXXXXXXX.events_*`
+WHERE
+  event_name = 'nlp_config_fetched'
+  AND (
+    SELECT value.string_value
+    FROM UNNEST(event_params)
+    WHERE key = 'nlp_enabled'
+  ) = 'true'
+GROUP BY day
+ORDER BY day DESC;
+```
+
+```sql
+-- NLP command success rate per action type (last 7 days)
+SELECT
+  (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'action')  AS action,
+  COUNTIF(
+    (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'success') = 'true'
+  )                                                                             AS successes,
+  COUNT(*)                                                                      AS total,
+  ROUND(
+    100 * COUNTIF(
+      (SELECT value.string_value FROM UNNEST(event_params) WHERE key = 'success') = 'true'
+    ) / COUNT(*),
+    1
+  )                                                                             AS success_pct
+FROM
+  `your_project.analytics_XXXXXXXX.events_*`
+WHERE
+  event_name = 'nlp_command_result'
+  AND _TABLE_SUFFIX >= FORMAT_DATE('%Y%m%d', DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY))
+GROUP BY action
+ORDER BY total DESC;
+```
 
 ---
 

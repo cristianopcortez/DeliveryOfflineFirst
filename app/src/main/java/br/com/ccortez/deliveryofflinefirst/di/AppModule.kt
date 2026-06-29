@@ -6,15 +6,18 @@ import br.com.ccortez.deliveryofflinefirst.data.local.AppDatabase
 import br.com.ccortez.deliveryofflinefirst.data.local.EntregaDao
 import br.com.ccortez.deliveryofflinefirst.data.local.datastore.SettingsConfig
 import br.com.ccortez.deliveryofflinefirst.data.local.datastore.settingsDataStore
+import br.com.ccortez.deliveryofflinefirst.data.repository.AnalyticsRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.EntregaRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.NlpRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.RemoteConfigRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.SettingsRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpPrompts
+import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
+import com.google.firebase.analytics.FirebaseAnalytics
 import br.com.ccortez.deliveryofflinefirst.BuildConfig
 import com.google.firebase.Firebase
 import com.google.firebase.remoteconfig.FirebaseRemoteConfig
@@ -113,4 +116,14 @@ object AppModule {
     @Singleton
     fun provideRemoteConfigRepository(remoteConfig: FirebaseRemoteConfig): RemoteConfigRepository =
         RemoteConfigRepositoryImpl(remoteConfig)
+
+    @Provides
+    @Singleton
+    fun provideFirebaseAnalytics(@ApplicationContext context: Context): FirebaseAnalytics =
+        FirebaseAnalytics.getInstance(context)
+
+    @Provides
+    @Singleton
+    fun provideAnalyticsRepository(analytics: FirebaseAnalytics): AnalyticsRepository =
+        AnalyticsRepositoryImpl(analytics)
 }

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -15,7 +16,8 @@ import kotlin.random.Random
 class SyncWorker @AssistedInject constructor(
     @Assisted ctx: Context,
     @Assisted params: WorkerParameters,
-    private val repository: EntregaRepository
+    private val repository: EntregaRepository,
+    private val analyticsRepository: AnalyticsRepository
 ) : CoroutineWorker(ctx, params) {
 
     companion object {
@@ -52,6 +54,7 @@ class SyncWorker @AssistedInject constructor(
                 }
 
                 Log.d(TAG, "Sync complete — ${pendentes.size} deliveries synced")
+                analyticsRepository.logSyncCompleted(quantity = pendentes.size)
                 Result.success()
             }
         } catch (e: Exception) {
