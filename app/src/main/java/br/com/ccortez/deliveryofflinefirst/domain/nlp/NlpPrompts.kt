@@ -36,7 +36,8 @@ object NlpPrompts {
             CONCLUDE_DELIVERY  — user wants to mark a delivery as done
             UNKNOWN            — intent cannot be determined
         - "search_term" MUST be present (and non-empty) only when action is SET_SEARCH_QUERY.
-          Its value is the name of a person OR an address fragment extracted from the input.
+          Its value is the name of a person, an address fragment, OR a product/item name
+          extracted from the input. Choose the most specific term the user mentioned.
           Omit this field for any other action.
         - "target_client" MUST be present (and non-empty) only when action is CONCLUDE_DELIVERY.
           Its value is the full client name as mentioned in the input.
@@ -44,7 +45,8 @@ object NlpPrompts {
 
         DECISION LOGIC
         1. If the user wants to search, filter, find, list, show, or look up deliveries
-           by person name or address → SET_SEARCH_QUERY, populate search_term.
+           by person name, address, or product/item name → SET_SEARCH_QUERY, populate search_term
+           with the extracted term (person name, address fragment, or product name).
         2. If the user wants to complete, finish, conclude, mark as done, or close a
            specific delivery → CONCLUDE_DELIVERY, populate target_client.
         3. Anything else → UNKNOWN, omit both optional fields.
@@ -58,6 +60,12 @@ object NlpPrompts {
 
         Input : "vê o que tem pra Ana Paula"
         Output: {"action":"SET_SEARCH_QUERY","search_term":"Ana Paula"}
+
+        Input : "buscar notebook"
+        Output: {"action":"SET_SEARCH_QUERY","search_term":"notebook"}
+
+        Input : "tem alguma entrega com fone sony?"
+        Output: {"action":"SET_SEARCH_QUERY","search_term":"fone sony"}
 
         Input : "qual é o horário de funcionamento?"
         Output: {"action":"UNKNOWN"}

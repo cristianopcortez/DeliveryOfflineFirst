@@ -2,6 +2,7 @@ package br.com.ccortez.deliveryofflinefirst.domain.nlp
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 @Serializable
 enum class NlpAction {
@@ -28,5 +29,13 @@ data class NlpCommand(
      *  The app must resolve this name against the live list to obtain the entrega ID
      *  before calling EntregasViewModel.concluirEntrega(id). */
     @SerialName("target_client")
-    val targetClient: String? = null
+    val targetClient: String? = null,
+
+    /**
+     * Set to true when [action] is UNKNOWN due to a technical failure (network timeout,
+     * API error, JSON parse error) rather than the model genuinely not understanding
+     * the intent. Not serialized — populated only by `NlpRepositoryImpl.fallback()`.
+     */
+    @Transient
+    val isError: Boolean = false
 )

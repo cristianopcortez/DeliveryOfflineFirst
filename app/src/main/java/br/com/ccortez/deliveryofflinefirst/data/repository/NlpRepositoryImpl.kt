@@ -33,7 +33,7 @@ class NlpRepositoryImpl(
 
     private fun fallback(reason: String): NlpCommand {
         Log.w(TAG, reason)
-        return NlpCommand(action = NlpAction.UNKNOWN)
+        return NlpCommand(action = NlpAction.UNKNOWN, isError = true)
     }
 
     companion object {

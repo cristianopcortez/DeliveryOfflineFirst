@@ -12,6 +12,8 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import br.com.ccortez.deliveryofflinefirst.data.worker.SyncWorker
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
+import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
+import br.com.ccortez.deliveryofflinefirst.domain.model.ItemPedido
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.data.repository.AnalyticsRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
@@ -50,38 +52,34 @@ class EntregasViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    // Screen state — single source of truth for loading, error, and full list (used by the dropdown)
+    // Screen state — single source of truth for loading, error, and the full list (used by the dropdown)
     private val _uiState = MutableStateFlow(EntregasUiState())
     val uiState: StateFlow<EntregasUiState> = _uiState.asStateFlow()
 
-    // SharedFlow: one-shot events that must not re-emit on rotation
-    // Key difference vs StateFlow: no current value, does not replay to new collectors
+    // SharedFlow: one-shot events that do not re-emit on rotation
     private val _eventos = MutableSharedFlow<EntregasEvent>()
     val eventos = _eventos.asSharedFlow()
 
-    // Optimistic default: NLP stays on while Remote Config is being fetched.
-    // Updated once fetchRemoteConfig() completes; the UI reacts reactively.
+    // Optimistic default: NLP stays on while Remote Config is being fetched
     private val _nlpEnabled = MutableStateFlow(true)
     val nlpEnabled: StateFlow<Boolean> = _nlpEnabled.asStateFlow()
 
-    // Search filter source as StateFlow (mutable internally, immutable externally)
+    // Reactive source for the search filter
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     // debounce + distinctUntilChanged + flatMapLatest | stateIn + WhileSubscribed
-    // debounce: waits 300ms with no changes before firing (avoids a query on every keystroke)
-    // flatMapLatest: cancels the previous query when a new filter arrives
-    // stateIn + WhileSubscribed(5000): converts cold → hot; stays active 5s without collectors (survives rotation)
-    // Client filter stays in the composable with remember — resets on rotation intentionally
-    val entregasFiltradas: StateFlow<List<Entrega>> = _searchQuery
+    // The filter now covers: client name, address, and any item name within the delivery.
+    val entregasFiltradas: StateFlow<List<EntregaComProdutos>> = _searchQuery
         .debounce(300)
         .distinctUntilChanged()
         .flatMapLatest { query ->
             repository.observarTodas().map { list ->
-                list.filter {
+                list.filter { ec ->
                     query.isBlank() ||
-                    it.cliente.contains(query, ignoreCase = true) ||
-                    it.endereco.contains(query, ignoreCase = true)
+                    ec.entrega.cliente.contains(query, ignoreCase = true) ||
+                    ec.entrega.endereco.contains(query, ignoreCase = true) ||
+                    ec.itens.any { it.nome.contains(query, ignoreCase = true) }
                 }
             }
         }
@@ -91,7 +89,7 @@ class EntregasViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    // Observes WorkManager state reactively — no polling
+    // WorkManager status observed reactively — no polling
     val syncStatus: StateFlow<WorkInfo.State?> = WorkManager.getInstance(context)
         .getWorkInfosForUniqueWorkFlow("sync_entregas")
         .map { infos -> infos.firstOrNull()?.state }
@@ -123,12 +121,9 @@ class EntregasViewModel @Inject constructor(
     }
 
     /**
-     * Option C: called by EntregasScreen whenever the lifecycle enters RESUMED
-     * (i.e. app comes back to foreground or user returns from Settings).
-     *
-     * In debug builds minimumFetchIntervalInSeconds = 0 (Option A), so this
-     * always goes to the server. In release it reads from the 1-hour cache,
-     * meaning no extra quota is consumed on every resume.
+     * Called by EntregasScreen whenever the lifecycle enters RESUMED.
+     * In debug builds (minimumFetchIntervalInSeconds = 0) always hits the server.
+     * In release it reads from the 1-hour cache — no extra quota consumed on every resume.
      */
     fun reloadRemoteConfig() {
         viewModelScope.launch {
@@ -172,29 +167,29 @@ class EntregasViewModel @Inject constructor(
     }
 
     /**
-     * Sends [comando] to the Gemini model and dispatches the result back into the
-     * existing ViewModel state/event channels so the UI reacts through normal UDF flow.
-     *
-     * SET_SEARCH_QUERY → injects the extracted term into [_searchQuery], which
-     *   immediately triggers the debounce + flatMapLatest reactive pipeline.
-     *
-     * CONCLUDE_DELIVERY → resolves the client name from [_uiState].entregas (the
-     *   source of truth already in memory) and delegates to [concluirEntrega].
-     *
-     * UNKNOWN → emits a one-shot snackbar event; the screen never crashes.
+     * Updates the [conferido] flag of an item via a clean UDF event.
+     * Room emits a new Flow snapshot → [entregasFiltradas] and [uiState] react automatically.
+     */
+    fun conferirItem(itemId: String, conferido: Boolean) {
+        viewModelScope.launch {
+            repository.atualizarConferido(itemId, conferido)
+        }
+    }
+
+    /**
+     * SET_SEARCH_QUERY → injects the extracted term into the debounce + flatMapLatest pipeline.
+     * CONCLUDE_DELIVERY → resolves the client from [_uiState].entregas and delegates to [concluirEntrega].
+     * UNKNOWN → emits a one-shot snackbar event; the UI never crashes.
      */
     fun processarComandoNLP(comando: String) {
         if (comando.isBlank()) return
         viewModelScope.launch {
-            // Clear the reactive search immediately so the list shows all deliveries
-            // while the NLP request is in flight — the command text must not filter the list
             _searchQuery.value = ""
             _uiState.update { it.copy(isNlpLoading = true) }
             analyticsRepository.logNlpCommandSubmitted()
 
             val nlpCommand = nlpRepository.interpretarComando(comando)
 
-            // Loading ends as soon as the model responds — regardless of the action taken next
             _uiState.update { it.copy(isNlpLoading = false) }
 
             when (nlpCommand.action) {
@@ -206,11 +201,11 @@ class EntregasViewModel @Inject constructor(
                     )
                 }
                 NlpAction.CONCLUDE_DELIVERY -> {
-                    val entrega = _uiState.value.entregas.firstOrNull {
-                        it.cliente.equals(nlpCommand.targetClient, ignoreCase = true)
+                    val entregaComProdutos = _uiState.value.entregas.firstOrNull {
+                        it.entrega.cliente.equals(nlpCommand.targetClient, ignoreCase = true)
                     }
-                    if (entrega != null) {
-                        concluirEntrega(entrega.id)
+                    if (entregaComProdutos != null) {
+                        concluirEntrega(entregaComProdutos.entrega.id)
                         analyticsRepository.logNlpCommandResult(
                             action = AnalyticsRepositoryImpl.ACTION_CONCLUDE_DELIVERY,
                             success = true
@@ -228,9 +223,12 @@ class EntregasViewModel @Inject constructor(
                     }
                 }
                 NlpAction.UNKNOWN -> {
-                    _eventos.emit(
-                        EntregasEvent.ShowSnackbar("Não entendi o comando ou houve um erro.")
-                    )
+                    val msg = if (nlpCommand.isError) {
+                        "Erro de conexão com o serviço de IA. Verifique a rede."
+                    } else {
+                        "Não entendi o comando. Tente reformular."
+                    }
+                    _eventos.emit(EntregasEvent.ShowSnackbar(msg))
                     analyticsRepository.logNlpCommandResult(
                         action = AnalyticsRepositoryImpl.ACTION_UNKNOWN,
                         success = false
@@ -255,20 +253,102 @@ class EntregasViewModel @Inject constructor(
             .enqueueUniqueWork("sync_entregas", ExistingWorkPolicy.KEEP, request)
     }
 
+    /**
+     * "Seed if empty" guard: only populates the database on the very first install.
+     *
+     * Checking [EntregaRepository.contarEntregas] == 0 before inserting prevents:
+     *  - Re-seeding on every app relaunch
+     *  - Triggering ON DELETE CASCADE on item_pedido FK (which would wipe checked items)
+     *
+     * Both inserts use IGNORE — if a race condition leaves existing rows, none are overwritten.
+     */
     private fun popularBancoSeVazio() {
         viewModelScope.launch {
+            if (repository.contarEntregas() > 0) return@launch
+
             repository.inserirTodas(entregasSeed)
+            itensSeed.forEach { (entregaId, itens) ->
+                repository.inserirItens(entregaId, itens)
+            }
         }
     }
 
     companion object {
         private const val TAG = "DEBUG_OFFLINE_FIRST"
 
+        // ── Deliveries seed ──────────────────────────────────────────────────
         private val entregasSeed = listOf(
-            Entrega("1", "Ana Paula", "Rua das Flores, 123", "Pendente"),
-            Entrega("2", "Carlos Lima", "Av. Brasil, 456", "Em rota"),
-            Entrega("3", "João Silva", "Rua do Comércio, 789", "Pendente"),
-            Entrega("4", "Maria Souza", "Travessa A, 12", "Concluída", sincronizada = false),
+            Entrega("seed-1", "Ana Paula Ferreira",   "Rua das Flores, 123 — Jardim Primavera",   "Pendente"),
+            Entrega("seed-2", "Carlos Lima",           "Av. Brasil, 456 — Centro",                 "Em rota"),
+            Entrega("seed-3", "João Silva",            "Rua do Comércio, 789 — Vila Industrial",   "Pendente"),
+            Entrega("seed-4", "Maria Souza",           "Travessa Azul, 12 — Bairro Novo",          "Concluída",  sincronizada = false),
+            Entrega("seed-5", "Roberto Alves",         "Alameda Santos, 201 — Higienópolis",        "Pendente"),
+            Entrega("seed-6", "Fernanda Costa",        "Rua XV de Novembro, 88 — Centro",           "Em rota"),
+            Entrega("seed-7", "Lucas Mendes",          "Estrada da Saudade, 50 — Zona Rural",       "Pendente"),
+        )
+
+        // ── Items seed per delivery ──────────────────────────────────────────
+        // Covers varied scenarios: electronics, stationery, clothing, groceries, and pharmacy.
+        // IDs prefixed with "seed-" to avoid collision with runtime-generated IDs.
+        private val itensSeed: Map<String, List<ItemPedido>> = mapOf(
+
+            // Ana Paula — mixed e-commerce order
+            "seed-1" to listOf(
+                ItemPedido("seed-1-a", "Tênis Nike Air Max 270 (tam. 38)",        1, false),
+                ItemPedido("seed-1-b", "Mochila Escolar Estampada",               2, false),
+                ItemPedido("seed-1-c", "Protetor Solar FPS 70 — 200ml",          3, false),
+                ItemPedido("seed-1-d", "Caixa de Papelão 50×40×30 cm",           1, false),
+            ),
+
+            // Carlos Lima — IT equipment (in transit)
+            "seed-2" to listOf(
+                ItemPedido("seed-2-a", "Notebook Dell XPS 15 (i7 / 32GB)",       1, false),
+                ItemPedido("seed-2-b", "Carregador Universal 65W USB-C",          1, false),
+                ItemPedido("seed-2-c", "Mouse Logitech MX Master 3",             1, false),
+                ItemPedido("seed-2-d", "Teclado Mecânico Keychron K6",           1, false),
+                ItemPedido("seed-2-e", "Hub USB-C 7 portas",                     2, false),
+            ),
+
+            // João Silva — books and stationery
+            "seed-3" to listOf(
+                ItemPedido("seed-3-a", "Livro: Clean Architecture (Uncle Bob)",   2, false),
+                ItemPedido("seed-3-b", "Livro: Kotlin in Action (2ª Ed.)",        1, false),
+                ItemPedido("seed-3-c", "Caderno Universitário 10 matérias",       3, false),
+                ItemPedido("seed-3-d", "Caneta Pilot G2 Preta (cx. 12 un.)",     1, false),
+                ItemPedido("seed-3-e", "Post-it 76×76mm — bloco colorido",       4, false),
+                ItemPedido("seed-3-f", "Marca-texto Stabilo Ponto 68 (6 cores)", 2, false),
+            ),
+
+            // Maria Souza — electronics (concluded, pending sync)
+            "seed-4" to listOf(
+                ItemPedido("seed-4-a", "Fone Sony WH-1000XM5 (preto)",           1, true),
+                ItemPedido("seed-4-b", "Cabo USB-C → 3.5mm Adaptador",           2, true),
+                ItemPedido("seed-4-c", "Capinha Silicone Sony WH-1000XM5",        1, true),
+            ),
+
+            // Roberto Alves — pharmacy and personal care
+            "seed-5" to listOf(
+                ItemPedido("seed-5-a", "Dipirona Sódica 500mg — 20 comp.",       2, false),
+                ItemPedido("seed-5-b", "Vitamina C 1000mg Efervescente (30 un.)",1, false),
+                ItemPedido("seed-5-c", "Álcool Gel 70% — frasco 500ml",          3, false),
+                ItemPedido("seed-5-d", "Termômetro Digital Axilar",              1, false),
+            ),
+
+            // Fernanda Costa — clothing (in transit)
+            "seed-6" to listOf(
+                ItemPedido("seed-6-a", "Jaqueta Corta-Vento Feminina (M)",        1, false),
+                ItemPedido("seed-6-b", "Calça Legging Supplex (P)",               2, false),
+                ItemPedido("seed-6-c", "Meias Esportivas Cano Médio (kit 3)",     2, false),
+            ),
+
+            // Lucas Mendes — grocery basket / rural route
+            "seed-7" to listOf(
+                ItemPedido("seed-7-a", "Arroz Branco Tipo 1 — 5kg",              2, false),
+                ItemPedido("seed-7-b", "Feijão Carioca — 1kg",                   3, false),
+                ItemPedido("seed-7-c", "Azeite Extravirgem — 500ml",             2, false),
+                ItemPedido("seed-7-d", "Café Torrado e Moído — 500g",            4, false),
+                ItemPedido("seed-7-e", "Açúcar Cristal — 1kg",                   2, false),
+            ),
         )
     }
 }

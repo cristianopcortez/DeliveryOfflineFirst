@@ -13,12 +13,13 @@ deliveryofflinefirst/
 ├── data/
 │   ├── local/
 │   │   ├── datastore/  # SettingsConfig, SettingsSerializer, AppSettingsDataStore
-│   │   └── (room)      # EntregaEntity, EntregaDao, AppDatabase
+│   │   └── (room)      # EntregaEntity, ItemPedidoEntity, EntregaComProdutosEntity
+│   │                   # EntregaDao, AppDatabase (v4)
 │   ├── repository/     # EntregaRepositoryImpl, NlpRepositoryImpl, SettingsRepositoryImpl, RemoteConfigRepositoryImpl, AnalyticsRepositoryImpl
 │   └── worker/         # SyncWorker (CoroutineWorker via Hilt)
 ├── di/                 # AppModule — Hilt SingletonComponent
 ├── domain/
-│   ├── model/          # Entrega (pure Kotlin, no Android deps)
+│   ├── model/          # Entrega, ItemPedido, EntregaComProdutos (pure Kotlin, no Android deps)
 │   ├── nlp/            # NlpAction, NlpCommand, NlpPrompts (Gemini system instructions)
 │   └── repository/     # EntregaRepository, NlpRepository, SettingsRepository, RemoteConfigRepository, AnalyticsRepository interfaces
 ├── navigation/         # AppNavigation — NavHost with Entregas + Settings routes
@@ -114,7 +115,7 @@ Two uses in `EntregasScreen`, both following the same principle: the source chan
 // Recomposes the sync badge only when the pending count changes,
 // not on every list update
 val pendentesSync by remember {
-    derivedStateOf { state.entregas.count { !it.sincronizada } }
+    derivedStateOf { state.entregas.count { !it.entrega.sincronizada } }
 }
 
 // Scroll position changes on every pixel — derivedStateOf fires only when the boolean flips
@@ -138,9 +139,13 @@ private fun ClienteFilterDropdown(
     // ...
 )
 
-// EntregaCard: does not know what "conclude" means
+// EntregaCard: does not know what "conclude" or "check item" means
 @Composable
-private fun EntregaCard(entrega: Entrega, onConcluir: () -> Unit)
+private fun EntregaCard(
+    entregaComProdutos: EntregaComProdutos,
+    onConcluir: () -> Unit,
+    onConferirItem: (itemId: String, conferido: Boolean) -> Unit,
+)
 
 // PendenteSyncBadge: only renders, holds no state
 @Composable
@@ -170,12 +175,18 @@ FloatingActionButton(onClick = {
 ### `LazyColumn` with stable keys
 
 ```kotlin
-items(items = entregasFiltradas, key = { it.id }) { entrega ->
-    EntregaCard(entrega = entrega, onConcluir = { viewModel.concluirEntrega(entrega.id) })
+items(items = entregasExibidas, key = { it.entrega.id }) { ec ->
+    EntregaCard(
+        entregaComProdutos = ec,
+        onConcluir = { viewModel.concluirEntrega(ec.entrega.id) },
+        onConferirItem = { itemId, conferido ->
+            viewModel.conferirItem(ec.entrega.id, itemId, conferido)
+        }
+    )
 }
 ```
 
-Without `key`, inserting one item at the top would recompose the entire list. With `key = { it.id }`, Compose only recomposes the affected item.
+Without `key`, inserting one item at the top would recompose the entire list. With `key = { it.entrega.id }`, Compose only recomposes the affected card — and the local `expandido` state inside each `EntregaCard` is preserved across scroll and item check recompositions.
 
 ### Unidirectional Data Flow (UDF)
 
@@ -380,9 +391,11 @@ Room is designed for datasets that need queries (filtering, ordering, JOIN). Per
 
 2. Room
    EntregaEntity.kt             ← @Entity with horarioConclusao (v2 column) + uuid (v3 column)
-   AppDatabase.kt               ← version = 3 + MIGRATION_1_2 + MIGRATION_2_3
-   EntregaDao.kt                ← @Query UPDATE + observarTodas(): Flow<List<>>
-   EntregasScreen.kt            ← card displays "Concluded at HH:mm"
+   ItemPedidoEntity.kt          ← @Entity with @ForeignKey(onDelete = CASCADE) → entrega(id)
+   EntregaComProdutosEntity.kt  ← POJO: @Embedded EntregaEntity + @Relation List<ItemPedidoEntity>
+   AppDatabase.kt               ← version = 4 + MIGRATION_1_2 + MIGRATION_2_3 + MIGRATION_3_4
+   EntregaDao.kt                ← @Transaction observarTodas(): Flow<List<EntregaComProdutosEntity>>
+   EntregasScreen.kt            ← expandable card + ItemPedidoRow with Checkbox
 ```
 
 ---
@@ -454,11 +467,12 @@ override suspend fun concluirEntrega(id: String) {
 
 Room generates one JSON per database version when `exportSchema = true`. These files are committed to Git so that every schema change is visible in PR diffs and testable with `MigrationTestHelper`.
 
-| File | DB version | Columns added | Why |
+| File | DB version | Columns / tables added | Why |
 |---|---|---|---|
 | `1.json` | 1 | `id`, `cliente`, `endereco`, `status`, `sincronizada` | Initial schema — core delivery fields + offline sync flag |
 | `2.json` | 2 | `horarioConclusao INTEGER` (nullable) | Conclusion timestamp — `ALTER TABLE` preserves existing rows; `NULL` for rows created before this migration |
 | `3.json` | 3 | `uuid TEXT NOT NULL DEFAULT ''` | Idempotency key for the outbox pattern — empty string default for seed rows; new deliveries always get a `UUID.randomUUID()` from the repository |
+| `4.json` | 4 | new table `item_pedido` with FK → `entrega(id)` + index | Item management feature — `CREATE TABLE` + `CREATE INDEX`; FK with `ON DELETE CASCADE` ensures items are removed when a delivery is deleted |
 
 The full `CREATE TABLE` recorded in `3.json` reflects the cumulative result of all three versions:
 
@@ -476,6 +490,342 @@ CREATE TABLE IF NOT EXISTS `entrega` (
 ```
 
 > Each JSON also stores an `identityHash` that Room uses at runtime to detect mismatches between the compiled `@Entity` and the on-device database — if they diverge without a registered migration, Room throws `IllegalStateException` instead of silently corrupting data.
+
+---
+
+## Item Management within Deliveries
+
+### Overview
+
+Each delivery (`Entrega`) now carries a list of products (`ItemPedido`) that the driver can check off one by one as they hand over the parcel. The feature was added as a vertical slice through all layers — domain → data → repository → ViewModel → UI — without breaking any existing behaviour.
+
+```
+┌────────────────────────────────────────────────┐
+│  EntregaCard (expanded)                        │
+│  ─────────────────────────────────────────     │
+│  Carlos Lima                            ▲      │  ← IconButton toggles expandido (remember)
+│  Av. Brasil, 456 — Centro                      │
+│  Status: Em rota                               │
+│  ────────────────────────────────────────      │
+│  ☐  Notebook Dell XPS 15 (i7 / 32GB)   Qtd:1  │  ← ItemPedidoRow: Checkbox + nome + quantidade
+│  ☐  Carregador Universal 65W USB-C     Qtd:1  │
+│  ☑  Mouse Logitech MX Master 3         Qtd:1  │  ← conferido=true → nome riscado
+│  ☐  Teclado Mecânico Keychron K6       Qtd:1  │
+│  ────────────────────────────────────────      │
+│  [ Concluir ]                                  │
+└────────────────────────────────────────────────┘
+```
+
+---
+
+### Domain layer — pure Kotlin models
+
+```kotlin
+// domain/model/ItemPedido.kt
+data class ItemPedido(
+    val id: String,
+    val nome: String,
+    val quantidade: Int,
+    val conferido: Boolean       // driver's check — persisted to Room
+)
+
+// domain/model/EntregaComProdutos.kt
+data class EntregaComProdutos(
+    val entrega: Entrega,
+    val itens: List<ItemPedido>
+)
+```
+
+`ItemPedido` has no Android or Room dependency — it is a plain Kotlin value object. `EntregaComProdutos` is the wrapper that flows from the repository through the ViewModel to the UI; no other type crosses layer boundaries.
+
+---
+
+### Data layer — Room entities and POJO
+
+#### `ItemPedidoEntity` — Foreign Key + Cascade
+
+```kotlin
+@Entity(
+    tableName = "item_pedido",
+    foreignKeys = [
+        ForeignKey(
+            entity = EntregaEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["entregaId"],
+            onDelete = ForeignKey.CASCADE       // items are deleted when the parent delivery is deleted
+        )
+    ],
+    indices = [Index("entregaId")]              // required by Room when a FK column is used in @Relation
+)
+data class ItemPedidoEntity(
+    @PrimaryKey val id: String,
+    val entregaId: String,
+    val nome: String,
+    val quantidade: Int,
+    val conferido: Boolean
+)
+```
+
+**Why `@Index("entregaId")`?** Room issues a warning if a FK column used in a `@Relation` has no index. Without it, every `SELECT * FROM item_pedido WHERE entregaId = ?` performs a full table scan. The index converts that to an O(log n) B-tree lookup.
+
+#### `EntregaComProdutosEntity` — Room POJO with `@Embedded` + `@Relation`
+
+```kotlin
+data class EntregaComProdutosEntity(
+    @Embedded val entrega: EntregaEntity,
+    @Relation(
+        parentColumn = "id",        // EntregaEntity.id
+        entityColumn = "entregaId"  // ItemPedidoEntity.entregaId
+    )
+    val itens: List<ItemPedidoEntity>
+)
+```
+
+This class is **not an `@Entity`** — it is never persisted directly. Room uses it as a query result type: when the DAO method is annotated with `@Transaction`, Room internally executes `SELECT * FROM entrega` and then `SELECT * FROM item_pedido WHERE entregaId IN (…)`, assembling the result into `EntregaComProdutosEntity` automatically.
+
+> **`@Embedded` vs `@Relation`:**  
+> `@Embedded` flattens a nested object into the same row (all fields become columns of the outer SELECT).  
+> `@Relation` is a one-to-many relationship resolved by a second query — Room handles the JOIN for you.
+
+---
+
+### DAO — `@Transaction` is mandatory with `@Relation`
+
+```kotlin
+@Dao
+interface EntregaDao {
+
+    @Transaction                // without this, Room may read entrega and items in two separate
+    @Query("SELECT * FROM entrega ORDER BY cliente ASC")   // transactions → inconsistent snapshot
+    fun observarTodas(): Flow<List<EntregaComProdutosEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)   // IGNORE on both: no CASCADE is triggered
+    suspend fun inserirTodas(entregas: List<EntregaEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun inserirItens(itens: List<ItemPedidoEntity>)
+
+    @Query("UPDATE item_pedido SET conferido = :conferido WHERE id = :itemId")
+    suspend fun atualizarConferido(itemId: String, conferido: Boolean)
+
+    @Query("SELECT COUNT(*) FROM entrega")
+    suspend fun contarEntregas(): Int     // guard for the idempotent seed
+}
+```
+
+**Why `OnConflictStrategy.IGNORE` instead of `REPLACE`?**
+
+`REPLACE` is shorthand for `DELETE + INSERT`. When the parent row (`entrega`) is deleted, SQLite fires the `ON DELETE CASCADE`, removing all associated `item_pedido` rows. If the app reseeds deliveries with `REPLACE` on every launch, it silently erases all `conferido = true` states the driver set during the session. `IGNORE` skips the insert if the row already exists — the existing data is never touched.
+
+---
+
+### Room Migration 3 → 4
+
+```kotlin
+// AppDatabase.kt — version bumped from 3 to 4
+@Database(
+    entities = [EntregaEntity::class, ItemPedidoEntity::class],
+    version = 4,
+    exportSchema = true
+)
+
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS `item_pedido` (
+                `id`         TEXT    NOT NULL,
+                `entregaId`  TEXT    NOT NULL,
+                `nome`       TEXT    NOT NULL,
+                `quantidade` INTEGER NOT NULL,
+                `conferido`  INTEGER NOT NULL,
+                PRIMARY KEY(`id`),
+                FOREIGN KEY(`entregaId`) REFERENCES `entrega`(`id`)
+                    ON UPDATE NO ACTION ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS `index_item_pedido_entregaId` ON `item_pedido` (`entregaId`)"
+        )
+    }
+}
+```
+
+`fallbackToDestructiveMigration()` is absent by design — existing delivery rows (including those in the outbox with `sincronizada = false`) are fully preserved. The migration only adds a new table; all existing data is untouched.
+
+---
+
+### Repository — updated interface and implementation
+
+```kotlin
+// EntregaRepository.kt — contract changes
+interface EntregaRepository {
+    fun observarTodas(): Flow<List<EntregaComProdutos>>          // was Flow<List<Entrega>>
+    suspend fun inserirItens(entregaId: String, itens: List<ItemPedido>)  // new
+    suspend fun atualizarConferido(itemId: String, conferido: Boolean)     // new
+    suspend fun contarEntregas(): Int                                       // new (seed guard)
+    // … existing methods unchanged
+}
+```
+
+```kotlin
+// EntregaRepositoryImpl.kt — mapping layer
+override fun observarTodas(): Flow<List<EntregaComProdutos>> =
+    dao.observarTodas().map { list ->
+        list.map { entity ->
+            EntregaComProdutos(
+                entrega = entity.entrega.toEntrega(),
+                itens = entity.itens.map { it.toItemPedido() }
+            )
+        }
+    }
+```
+
+The mapper keeps `entregaId` (an infrastructure field) out of the domain model. `ItemPedido` only carries `id`, `nome`, `quantidade`, and `conferido` — the association to a delivery is implicit in `EntregaComProdutos`.
+
+---
+
+### ViewModel — extended reactive pipeline and UDF event
+
+#### Filter pipeline now covers item names
+
+```kotlin
+// Before: filter only on entrega.cliente and entrega.endereco
+// After: also matches any item name within the delivery
+
+val entregasFiltradas: StateFlow<List<EntregaComProdutos>> = _searchQuery
+    .debounce(300)
+    .distinctUntilChanged()
+    .flatMapLatest { query ->
+        repository.observarTodas().map { list ->
+            list.filter { ec ->
+                query.isBlank() ||
+                ec.entrega.cliente.contains(query, ignoreCase = true) ||
+                ec.entrega.endereco.contains(query, ignoreCase = true) ||
+                ec.itens.any { it.nome.contains(query, ignoreCase = true) }  // ← new
+            }
+        }
+    }
+    .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+```
+
+Searching for `"Dell"` now surfaces the Carlos Lima delivery even if `"Dell"` appears nowhere in the client name or address — it matches `Notebook Dell XPS 15` in his item list.
+
+#### `conferirItem` — clean UDF event
+
+```kotlin
+fun conferirItem(entregaId: String, itemId: String, conferido: Boolean) {
+    viewModelScope.launch {
+        repository.atualizarConferido(itemId, conferido)
+        // Room emits a new Flow snapshot → entregasFiltradas + uiState react automatically
+        // No manual _uiState.update needed — the @Transaction query handles it
+    }
+}
+```
+
+The ViewModel does not manually update `_uiState` after a check — it simply writes to Room and lets the existing `observarTodas()` Flow propagate the change upward. This is the canonical UDF pattern: a single write produces a single reactive emission that the entire screen subscribes to.
+
+#### Idempotent seed with guard
+
+```kotlin
+private fun popularBancoSeVazio() {
+    viewModelScope.launch {
+        if (repository.contarEntregas() > 0) return@launch   // guard: only seeds on first install
+
+        repository.inserirTodas(entregasSeed)
+        itensSeed.forEach { (entregaId, itens) ->
+            repository.inserirItens(entregaId, itens)
+        }
+    }
+}
+```
+
+Without the guard, every cold start would call `inserirTodas` with `REPLACE` — which as explained above would cascade-delete all items and then re-insert them with `conferido = false`, discarding the driver's work. The `contarEntregas()` guard makes the seed a **one-time operation** that runs only on first install.
+
+---
+
+### UI — expandable card with `AnimatedVisibility`
+
+#### State hoisting for the check event
+
+```kotlin
+// EntregasScreen.kt — LazyColumn
+items(items = entregasExibidas, key = { it.entrega.id }) { ec ->
+    EntregaCard(
+        entregaComProdutos = ec,
+        onConcluir = { viewModel.concluirEntrega(ec.entrega.id) },
+        onConferirItem = { itemId, conferido ->
+            viewModel.conferirItem(ec.entrega.id, itemId, conferido)  // UDF event
+        }
+    )
+}
+```
+
+`EntregaCard` and `ItemPedidoRow` are stateless: they receive data and callbacks, never owning what they display. The check event travels up via `onConferirItem` → `viewModel.conferirItem` → Room → Flow → recomposition.
+
+#### Expand/collapse with local `remember`
+
+```kotlin
+@Composable
+private fun EntregaCard(
+    entregaComProdutos: EntregaComProdutos,
+    onConcluir: () -> Unit,
+    onConferirItem: (itemId: String, conferido: Boolean) -> Unit,
+) {
+    var expandido by remember { mutableStateOf(false) }   // local — resets on navigation, not on item check
+
+    AnimatedVisibility(visible = expandido) {
+        Column {
+            HorizontalDivider()
+            entregaComProdutos.itens.forEach { item ->
+                ItemPedidoRow(item = item, onConferido = { onConferirItem(item.id, it) })
+            }
+        }
+    }
+}
+```
+
+`expandido` uses `remember` (not `rememberSaveable`) intentionally — the expanded state is ephemeral UI state that does not need to survive process death or navigation. The stable `key = { it.entrega.id }` in `LazyColumn` ensures the composable for each card is not recreated during scroll or item updates, preserving `expandido` across recompositions triggered by a Checkbox check.
+
+> **Why not `rememberSaveable` here?** Restoring every card's expand state across rotation or process death adds Bundle overhead with no user benefit — the list is short and re-expanding takes a single tap.
+
+#### Visual feedback — strikethrough on confirmed items
+
+```kotlin
+@Composable
+private fun ItemPedidoRow(item: ItemPedido, onConferido: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = item.conferido, onCheckedChange = onConferido)
+        Column {
+            Text(
+                text = item.nome,
+                textDecoration = if (item.conferido) TextDecoration.LineThrough
+                                 else TextDecoration.None    // no extra state: driven by DB value
+            )
+            Text(text = "Qtd: ${item.quantidade}", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+```
+
+`TextDecoration.LineThrough` is derived directly from `item.conferido` — no local boolean needed. Every recomposition triggered by a Checkbox check automatically re-reads the updated value from the Room Flow.
+
+---
+
+### Seed data — 7 deliveries, 28 items
+
+The seed is designed to demonstrate multiple real-world scenarios simultaneously on first launch:
+
+| ID | Client | Category | Items | Status | Seed state |
+|---|---|---|---|---|---|
+| seed-1 | Ana Paula Ferreira | E-commerce (mixed) | 4 | Pendente | All `conferido=false` |
+| seed-2 | Carlos Lima | IT equipment | 5 | Em rota | All `conferido=false` |
+| seed-3 | João Silva | Books & stationery | 6 | Pendente | All `conferido=false` |
+| seed-4 | Maria Souza | Electronics | 3 | Concluída (`sincronizada=false`) | All `conferido=true` |
+| seed-5 | Roberto Alves | Pharmacy | 4 | Pendente | All `conferido=false` |
+| seed-6 | Fernanda Costa | Clothing | 3 | Em rota | All `conferido=false` |
+| seed-7 | Lucas Mendes | Groceries | 5 | Pendente | All `conferido=false` |
+
+**seed-4 (Maria Souza)** is pre-configured with `conferido = true` on all items and `sincronizada = false` on the delivery — demonstrating the sync badge, the completed delivery layout, and the strikethrough items simultaneously from the very first launch, without the driver needing to interact with the app.
 
 ---
 
@@ -744,13 +1094,75 @@ The system prompt (`NlpPrompts.DELIVERY_ASSISTANT_SYSTEM_PROMPT`) is written in 
 
 #### `SET_SEARCH_QUERY` — filter the delivery list
 
+The extracted `search_term` is injected directly into `_searchQuery`, triggering the `debounce(300) + distinctUntilChanged + flatMapLatest` reactive pipeline. The filter covers **client name, address, and any item name within a delivery** — so a product search surfaces the correct delivery even if the term appears nowhere in the client name or address.
+
+**By client name or address**
+
 | User input | Extracted `search_term` | Effect |
 |---|---|---|
 | `"pesquisar entregas na Av. Brasil"` | `"Av. Brasil"` | Filters list to Carlos Lima |
-| `"vê o que tem pra Ana Paula"` | `"Ana Paula"` | Filters list to Ana Paula |
+| `"vê o que tem pra Ana Paula"` | `"Ana Paula"` | Filters list to Ana Paula Ferreira |
 | `"buscar João"` | `"João"` | Filters by name fragment |
 
-The extracted `search_term` is injected directly into `_searchQuery`, triggering the existing `debounce(300) + distinctUntilChanged + flatMapLatest` reactive pipeline.
+**By product / item name**
+
+| User input | Extracted `search_term` | Match in item list | Delivery shown |
+|---|---|---|---|
+| `"buscar notebook"` | `"notebook"` | "Notebook Dell XPS 15 (i7 / 32GB)" | Carlos Lima |
+| `"tem alguma entrega com fone sony?"` | `"fone sony"` | "Fone Sony WH-1000XM5 (preto)" | Maria Souza |
+| `"onde está o livro de clean architecture?"` | `"clean architecture"` | "Livro: Clean Architecture (Uncle Bob)" | João Silva |
+| `"procurar dipirona"` | `"dipirona"` | "Dipirona Sódica 500mg — 20 comp." | Roberto Alves |
+| `"mostrar entrega com vitamina"` | `"vitamina"` | "Vitamina C 1000mg Efervescente (30 un.)" | Roberto Alves |
+
+**How item search works end-to-end**
+
+```
+User: "buscar notebook"
+        ↓
+Gemini (updated prompt) → {"action":"SET_SEARCH_QUERY","search_term":"notebook"}
+        ↓
+onSearchQueryChange("notebook") → _searchQuery.value = "notebook"
+        ↓
+debounce(300ms) + distinctUntilChanged + flatMapLatest
+        ↓
+repository.observarTodas().map { list ->
+    list.filter { ec ->
+        ec.itens.any { it.nome.contains("notebook", ignoreCase = true) }
+        // "Notebook Dell XPS 15" matches → Carlos Lima delivery surfaces
+    }
+}
+        ↓
+LazyColumn displays only Carlos Lima's delivery
+```
+
+The system prompt was updated to explicitly instruct Gemini that `search_term` can be a **person name, address fragment, or product/item name**, and two item-based few-shot examples were added to anchor the model to this new behaviour.
+
+#### Auto-expand behaviour — card opens when a product is found
+
+Surfacing a delivery is not enough when the user's intent is to see its items. `EntregaCard` uses a `remember` with a composite key to auto-expand whenever the active query matches an item name:
+
+```kotlin
+var expandido by remember(searchQuery, entregaComProdutos.itens) {
+    val shouldExpand = searchQuery.isNotBlank() &&
+        entregaComProdutos.itens.any { it.nome.contains(searchQuery, ignoreCase = true) }
+    mutableStateOf(shouldExpand)
+}
+```
+
+| Scenario | Query | Item match | Card state |
+|---|---|---|---|
+| Search by client name | `"Ana Paula"` | No item contains "Ana Paula" | Collapsed (default) |
+| Search by product | `"notebook"` | "Notebook Dell XPS 15" matches | **Expanded automatically** |
+| Query cleared | `""` | `isNotBlank()` → false | Collapsed (reset) |
+| User taps collapse | any | — | Collapsed (manual override) |
+
+**Why `remember(searchQuery, entregaComProdutos.itens)` and not plain `remember`**
+
+`remember` without a key caches the initial value for the entire lifetime of the composable. Using a composite key forces the `remember` block to re-execute whenever either input changes:
+
+- `searchQuery` changes → block re-runs → `shouldExpand` is recalculated → card opens or closes accordingly
+- `entregaComProdutos.itens` changes (e.g. after a Checkbox check → Room emits a new snapshot) → block re-runs → if the query still matches an item, `shouldExpand` remains `true` and the card stays open
+- The user can still collapse the card manually at any time — `expandido` is a `var`, so the `IconButton` click continues to work normally after the initial value is set
 
 #### `CONCLUDE_DELIVERY` — mark a delivery as done
 

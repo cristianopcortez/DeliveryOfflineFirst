@@ -1,14 +1,17 @@
 package br.com.ccortez.deliveryofflinefirst.presentation.screen
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -16,17 +19,20 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.FloatingActionButton
@@ -56,10 +62,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkInfo
-import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
+import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
+import br.com.ccortez.deliveryofflinefirst.domain.model.ItemPedido
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,16 +89,16 @@ fun EntregasScreen(
     // searchQuery lives in the ViewModel — debounce requires a persistent StateFlow
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
 
-    // Text-filtered list via debounce + flatMapLatest + stateIn in the ViewModel
+    // Text-filtered list via debounce + flatMapLatest in the ViewModel
     val entregasFiltradas by viewModel.entregasFiltradas.collectAsStateWithLifecycle()
 
-    // selectedCliente uses remember — resets to "Todos" on rotation (intentional behaviour)
+    // selectedCliente uses remember — intentionally resets to "Todos" on rotation
     var selectedCliente by remember { mutableStateOf("Todos") }
 
-    // Client filtering done here in the composable; recalculates only when inputs change
+    // Dropdown filter applied in the composable; recalculates only when inputs change
     val entregasExibidas = remember(entregasFiltradas, selectedCliente) {
         if (selectedCliente == "Todos") entregasFiltradas
-        else entregasFiltradas.filter { it.cliente == selectedCliente }
+        else entregasFiltradas.filter { it.entrega.cliente == selectedCliente }
     }
 
     // WorkManager status observed reactively — no polling
@@ -99,7 +107,7 @@ fun EntregasScreen(
     // rememberSaveable: survives rotation without living in the ViewModel
     var notLivedInViewModel by rememberSaveable { mutableStateOf("") }
 
-    // Ephemeral UI state — dropdown does not need to survive rotation
+    // Ephemeral UI state — the dropdown does not need to survive rotation
     var expanded by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
@@ -112,7 +120,7 @@ fun EntregasScreen(
 
     // derivedStateOf: recalculates only when sincronizada changes, not on every recomposition
     val pendentesSync by remember {
-        derivedStateOf { state.entregas.count { !it.sincronizada } }
+        derivedStateOf { state.entregas.count { !it.entrega.sincronizada } }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -128,8 +136,6 @@ fun EntregasScreen(
     }
 
     // Option C: re-fetch Remote Config every time the screen enters RESUMED state.
-    // This picks up any value activated by Option B (Reload button in Settings)
-    // or any console change that happened while the app was in the background.
     // repeatOnLifecycle restarts the block on each RESUMED entry and cancels on PAUSED.
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
@@ -170,7 +176,7 @@ fun EntregasScreen(
                 .fillMaxSize()
         ) {
             ClienteFilterDropdown(
-                clientes = state.entregas.map { it.cliente },
+                clientes = state.entregas.map { it.entrega.cliente },
                 selectedCliente = selectedCliente,
                 expanded = expanded,
                 onExpandedChange = { expanded = it },
@@ -189,7 +195,7 @@ fun EntregasScreen(
                 placeholder = {
                     Text(
                         if (nlpEnabled) "Buscar ou descreva um comando de IA..."
-                        else "Buscar entrega..."
+                        else "Buscar entrega ou item..."
                     )
                 },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
@@ -280,13 +286,23 @@ fun EntregasScreen(
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            // stable key = delivery id — prevents Layout Shift when expanding items
                             items(
                                 items = entregasExibidas,
-                                key = { it.id }
-                            ) { entrega ->
+                                key = { it.entrega.id }
+                            ) { entregaComProdutos ->
                                 EntregaCard(
-                                    entrega = entrega,
-                                    onConcluir = { viewModel.concluirEntrega(entrega.id) }
+                                    entregaComProdutos = entregaComProdutos,
+                                    searchQuery = searchQuery,
+                                    onConcluir = {
+                                        viewModel.concluirEntrega(entregaComProdutos.entrega.id)
+                                    },
+                                    onConferirItem = { itemId, conferido ->
+                                        viewModel.conferirItem(
+                                            itemId = itemId,
+                                            conferido = conferido
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -405,14 +421,68 @@ private fun ClienteFilterDropdown(
     }
 }
 
+/**
+ * Delivery card with an expandable product sub-list (State Hoisting via callbacks).
+ *
+ * `expandido` starts as `true` whenever [searchQuery] is non-blank and matches at least
+ * one item name — surfacing items immediately when the user searched for a product via
+ * text or AI command. The user can still manually collapse the card afterwards.
+ * When the query is cleared, `expandido` resets to `false` via the remember key.
+ *
+ * `todosItensConferidos` is derived via derivedStateOf: the "Conclude" button only
+ * recomposes when the boolean flips (false → true), not on every individual Checkbox click.
+ */
 @Composable
-private fun EntregaCard(entrega: Entrega, onConcluir: () -> Unit) {
+private fun EntregaCard(
+    entregaComProdutos: EntregaComProdutos,
+    searchQuery: String,
+    onConcluir: () -> Unit,
+    onConferirItem: (itemId: String, conferido: Boolean) -> Unit,
+) {
+    val entrega = entregaComProdutos.entrega
+
+    // Auto-expand when the active query matches an item name — fulfils the implicit intent of
+    // commands like "vê o que tem pra Ana Paula" or "buscar notebook".
+    // remember(searchQuery, entregaComProdutos.itens): resets whenever the query or item list changes,
+    // so clearing the search field collapses the card back to its default state.
+    var expandido by remember(searchQuery, entregaComProdutos.itens) {
+        val shouldExpand = searchQuery.isNotBlank() &&
+            entregaComProdutos.itens.any { it.nome.contains(searchQuery, ignoreCase = true) }
+        mutableStateOf(shouldExpand)
+    }
+
+    // derivedStateOf: recalculates only when the item list changes (new Room emission).
+    // The button recomposes only when the boolean actually flips — not on every individual click.
+    // Empty lists: all{} returns true by vacuous truth → deliveries with no items can be concluded freely.
+    val todosItensConferidos by remember(entregaComProdutos.itens) {
+        derivedStateOf { entregaComProdutos.itens.all { it.conferido } }
+    }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = entrega.cliente,
-                style = MaterialTheme.typography.titleMedium
-            )
+
+            // Header row: client name + expand/collapse button (only shown if there are items)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = entrega.cliente,
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                if (entregaComProdutos.itens.isNotEmpty()) {
+                    IconButton(onClick = { expandido = !expandido }) {
+                        Icon(
+                            imageVector = if (expandido) Icons.Default.KeyboardArrowUp
+                                          else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (expandido) "Recolher itens" else "Ver itens"
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = entrega.endereco,
@@ -433,18 +503,75 @@ private fun EntregaCard(entrega: Entrega, onConcluir: () -> Unit) {
                     color = MaterialTheme.colorScheme.outline
                 )
             }
+
+            // AnimatedVisibility prevents Layout Shift — expansion animates smoothly
+            AnimatedVisibility(visible = expandido) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(4.dp))
+                    entregaComProdutos.itens.forEach { item ->
+                        ItemPedidoRow(
+                            item = item,
+                            onConferido = { isChecked -> onConferirItem(item.id, isChecked) }
+                        )
+                    }
+                }
+            }
+
             if (entrega.status != "Concluída") {
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = onConcluir,
+                    enabled = todosItensConferidos,
                     modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 ) {
-                    Text("Concluir")
+                    Text(
+                        if (todosItensConferidos) "Concluir Entrega"
+                        else "Confira todos os itens"
+                    )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Product row with a check Checkbox (State Hoisting via callbacks).
+ * The event travels up via [onConferido] → ViewModel → Room → Flow → recomposition.
+ * Item name is struck through when `item.conferido` = true, providing visual feedback without extra state.
+ */
+@Composable
+private fun ItemPedidoRow(
+    item: ItemPedido,
+    onConferido: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(
+            checked = item.conferido,
+            onCheckedChange = onConferido
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.nome,
+                style = MaterialTheme.typography.bodyMedium,
+                textDecoration = if (item.conferido) TextDecoration.LineThrough else TextDecoration.None
+            )
+            Text(
+                text = "Qtd: ${item.quantidade}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
