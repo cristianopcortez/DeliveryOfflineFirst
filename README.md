@@ -1358,6 +1358,123 @@ Register that token at **Firebase Console → Build → App Check → your Andro
 
 ---
 
+## Multi-Agent AI Architecture (Orchestrator-Worker Pattern)
+
+### Why two stages instead of one
+
+A single general-purpose prompt for a delivery driver app must handle both logistics intents ("find delivery for João", "conclude Carlos Lima's delivery") and inventory intents ("check the notebook", "uncheck the vitamins for Roberto"). Combining both in one system instruction bloats the context, increases hallucination risk, and makes prompt maintenance brittle.
+
+The two-stage pipeline keeps each model's context minimal and focused:
+
+- **Stage 1 — Orchestrator:** a single ultra-short call that classifies the command's route (`LOGISTICS`, `INVENTORY`, or `UNKNOWN`). No domain knowledge needed — only routing rules.
+- **Stage 2 — Worker:** a specialist call that produces the final `NlpCommand` JSON. Each worker knows only its own domain.
+
+### Flow diagram
+
+```
+User types a command in EntregasScreen
+          │
+          ▼
+EntregasViewModel.processarComandoNLP(comando)
+          │
+          ▼
+NlpRepositoryImpl.interpretarComando(comando)
+          │
+          ▼
+┌─────────────────────────────────────────────────────┐
+│  STAGE 1 — Orchestrator (ORCHESTRATOR_ROUTER_PROMPT) │
+│  Ultra-short call: classify route only               │
+│  Output: {"route":"LOGISTICS"|"INVENTORY"|"UNKNOWN"} │
+└─────────────────────────────────────────────────────┘
+          │
+          ├── route = "LOGISTICS"  ──▶  LOGISTICS_WORKER_PROMPT
+          │                              SET_SEARCH_QUERY | CONCLUDE_DELIVERY
+          │
+          └── route = "INVENTORY"  ──▶  INVENTORY_WORKER_PROMPT
+                                         CONFERIR_ITEM
+                                           target_item
+                                           target_client  (optional)
+                                           item_conferido_state
+          │
+          ▼
+NlpCommand(action, searchTerm?, targetClient?, targetItem?, itemConferidoState?)
+          │
+          ▼
+EntregasViewModel.processarComandoNLP — when(action) dispatcher
+          │
+          ├── SET_SEARCH_QUERY   → onSearchQueryChange(searchTerm)  → debounce pipeline
+          ├── CONCLUDE_DELIVERY  → concluirEntrega(resolvedId)       → Room + WorkManager
+          ├── CONFERIR_ITEM      → global or scoped item search       → atualizarConferido()
+          └── UNKNOWN            → ShowSnackbar event
+          │
+          ▼
+Room emits new Flow snapshot  →  entregasFiltradas  →  Compose recomposition
+```
+
+---
+
+### CONFERIR_ITEM — Busca Global Sem Ambiguidade (Hands-Free Contextual Execution)
+
+The Inventory Worker extracts `target_item` (always present) and `target_client` (optional — omitted when the driver does not mention a name). The ViewModel uses these two fields to implement a three-branch dispatch that enables hands-free item checking while protecting against data corruption:
+
+```kotlin
+when (nlpCommand.action) {
+    NlpAction.CONFERIR_ITEM -> {
+        val todasEntregas = _uiState.value.entregas
+
+        if (nlpCommand.targetClient != null) {
+            // Branch 1 — client-scoped: search within one delivery only
+            val entregaDoCliente = todasEntregas.firstOrNull {
+                it.entrega.cliente.contains(nlpCommand.targetClient, ignoreCase = true)
+            }
+            val item = entregaDoCliente?.itens?.firstOrNull {
+                it.nome.contains(targetItem, ignoreCase = true)
+            }
+            if (item != null) repository.atualizarConferido(item.id, estado)
+
+        } else {
+            // Branch 2 — global search across ALL deliveries
+            val correspondentes = todasEntregas.flatMap { it.itens }
+                .filter { it.nome.contains(targetItem, ignoreCase = true) }
+
+            when (correspondentes.size) {
+                0    -> showSnackbar("Nenhum item com '$targetItem' foi encontrado.")
+                1    -> repository.atualizarConferido(correspondentes.first().id, estado)
+                else -> showSnackbar(   // protective ambiguity guard — no write
+                    "Existe mais de um item correspondente a '$targetItem'. " +
+                    "Por favor, informe o nome do cliente."
+                )
+            }
+        }
+    }
+    else -> { /* other NLP actions */ }
+}
+```
+
+**The ambiguity guard** (`correspondentes.size > 1`) is the key safety mechanism: if the same product name exists in more than one delivery, the ViewModel refuses to write to Room and instead prompts the driver for the client name. This prevents a voice command like "conferei a caixa de papelão" from silently checking the wrong box when two deliveries both contain that item.
+
+---
+
+### Practical examples
+
+| Driver says (Portuguese) | Route classified | NlpCommand produced | Result in UI |
+|---|---|---|---|
+| `"conferei a mochila"` | `INVENTORY` → Inventory Worker | `CONFERIR_ITEM, targetItem="mochila"` | Global search: "Mochila Escolar Estampada" found only in Ana Paula's delivery → item checked, Snackbar "'Mochila Escolar Estampada' conferido." |
+| `"conferei a caixa de papelão"` | `INVENTORY` → Inventory Worker | `CONFERIR_ITEM, targetItem="caixa de papelão"` | Global search: same name in Ana Paula AND Carlos Lima → ambiguity guard fires, **no write**, Snackbar "Existe mais de um item correspondente a 'caixa de papelão'. Por favor, informe o nome do cliente." |
+| `"conferei a caixa de papelão da Ana Paula"` | `INVENTORY` → Inventory Worker | `CONFERIR_ITEM, targetItem="caixa de papelão", targetClient="Ana Paula"` | Client-scoped search: only Ana Paula's "Caixa de Papelão 50×40×30 cm" → item checked, Snackbar "'Caixa de Papelão 50×40×30 cm' conferido." |
+
+---
+
+### Test coverage for the multi-agent flow
+
+The two-stage pipeline is an implementation detail of `NlpRepositoryImpl`, hidden behind the `NlpRepository` interface. Tests never call Gemini — they inject a `FakeNlpRepository` that returns a pre-configured `NlpCommand` and exercise only the ViewModel's dispatch logic.
+
+**Unit tests (`ConferirItemViewModelTest` — Robolectric, JVM):** The three scenarios above are covered as isolated `@Test` methods. `FakeEntregaRepositoryForTest` pre-loads the full seed dataset so `_uiState.value.entregas` is populated before `processarComandoNLP()` runs. Assertions verify both the `atualizarConferido()` call record (Scenarios A and C) and the absence of any write (Scenario B), plus the exact Snackbar message emitted via `SharedFlow`.
+
+**Instrumented tests (`NlpConferirItemUiTest` — emulator/device, Hilt):** The same three scenarios are exercised end-to-end against a real Compose UI with in-memory Room. `@BindValue` injects a configurable `FakeNlpRepository` instance; each `@Test` sets `response` before tapping the Send button and uses `waitUntil` to poll for the expected Snackbar text — proving that the entire reactive chain from ViewModel → Room → Flow → `LaunchedEffect` → `SnackbarHost` completes correctly.
+
+---
+
 ## Firebase Remote Config — feature flags
 
 ### What it is and why it's here
