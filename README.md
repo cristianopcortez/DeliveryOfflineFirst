@@ -51,6 +51,63 @@ deliveryofflinefirst/
 
 ---
 
+## Getting Started
+
+This project connects to Firebase for Remote Config, AI (Gemini) and App Check. Two files are **not committed** to the repository and must be configured locally before the app builds and runs correctly.
+
+### 1 — `google-services.json`
+
+Download it from **Firebase Console → Project settings → Your apps → Google Services** and place it at:
+
+```
+app/google-services.json
+```
+
+### 2 — Firebase App Check debug token (`local.properties`)
+
+Firebase App Check blocks API calls from unsigned / emulator builds unless a registered debug token is present. The token is stored in the app's `SharedPreferences` and is lost on every clean install, so the project pins it via `local.properties`.
+
+**One-time setup (per developer machine):**
+
+1. Add an empty placeholder to `local.properties` (root of the project):
+   ```properties
+   APP_CHECK_DEBUG_TOKEN=
+   ```
+
+2. Run the app once on the emulator/device:
+   ```
+   ./gradlew :app:installDebug
+   ```
+
+3. Open **Logcat** in Android Studio and filter by:
+   ```
+   tag:DebugAppCheckProvider
+   ```
+   You will see a line like:
+   ```
+   D  DebugAppCheckProvider: Enter this debug secret into the allow list in
+      the Firebase Console for your project: 7B3F2A1E-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ```
+
+4. Copy the UUID and register it in **Firebase Console → Build → App Check → your Android app → Manage debug tokens → Add debug token**.
+
+5. Paste the same UUID into `local.properties`:
+   ```properties
+   APP_CHECK_DEBUG_TOKEN=7B3F2A1E-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+   ```
+
+6. Rebuild and install:
+   ```
+   ./gradlew :app:installDebug
+   ```
+
+From this point on the same token is pinned permanently — reinstalls and test runs will never rotate it again.
+
+> `local.properties` is listed in `.gitignore` and is never committed.  
+> Release builds do not include any debug token.
+
+---
+
 ## Jetpack Compose & State Management
 
 ### Immutable UiState + ViewModel as source of truth

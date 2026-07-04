@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -6,6 +8,15 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
 }
+
+// Read developer-local secrets that must NOT be committed to version control.
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+// UUID registered in Firebase Console → Build → App Check → Manage debug tokens.
+// Paste your UUID there. It is only embedded in debug builds.
+val appCheckDebugToken: String = localProperties.getProperty("APP_CHECK_DEBUG_TOKEN", "")
 
 android {
     namespace = "br.com.ccortez.deliveryofflinefirst"
@@ -22,6 +33,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Expose the pinned debug token so DeliveryApplication can pre-populate
+            // SharedPreferences before the Firebase App Check SDK reads it.
+            // An empty string means "let the SDK auto-generate" (first-run behaviour).
+            buildConfigField("String", "APP_CHECK_DEBUG_TOKEN", "\"$appCheckDebugToken\"")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

@@ -27,7 +27,7 @@ class NlpRepositoryImpl(
             fallback("Falha ao desserializar resposta JSON: ${e.message}")
         } catch (e: Exception) {
             // Covers: network timeout, FirebaseException, API quota exceeded, etc.
-            fallback("Erro ao chamar o modelo de IA: ${e.message}")
+            fallback("Erro ao chamar o modelo de IA [${e::class.simpleName}]: ${e.message}")
         }
     }
 
