@@ -11,7 +11,6 @@ import br.com.ccortez.deliveryofflinefirst.data.repository.EntregaRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.NlpRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.RemoteConfigRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.data.repository.SettingsRepositoryImpl
-import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpPrompts
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
@@ -23,11 +22,6 @@ import com.google.firebase.Firebase
 import com.google.firebase.remoteconfig.FirebaseRemoteConfig
 import com.google.firebase.remoteconfig.remoteConfig
 import com.google.firebase.remoteconfig.remoteConfigSettings
-import com.google.firebase.ai.GenerativeModel
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.GenerativeBackend
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -64,32 +58,14 @@ object AppModule {
         SettingsRepositoryImpl(dataStore)
 
     /**
-     * Creates the Gemini model instance once for the entire app lifetime.
-     *
-     * - backend = googleAI(): uses the Gemini Developer API via Firebase.
-     *   Switch to GenerativeBackend.vertexAI() if you move to a Vertex AI project.
-     * - responseMimeType = "application/json": instructs the model to produce
-     *   constrained JSON output (no markdown, no prose).
-     * - systemInstruction: loaded from NlpPrompts so the model always acts as a
-     *   strict parser, regardless of which screen triggers the call.
+     * NlpRepositoryImpl builds its own GenerativeModel instances internally,
+     * one per specialist prompt (orchestrator, logistics worker, inventory worker).
+     * No external GenerativeModel injection is needed.
      */
     @Provides
     @Singleton
-    fun provideGenerativeModel(): GenerativeModel =
-        Firebase.ai(backend = GenerativeBackend.googleAI()).generativeModel(
-            modelName = "gemini-2.5-flash",
-            generationConfig = generationConfig {
-                responseMimeType = "application/json"
-            },
-            systemInstruction = content {
-                text(NlpPrompts.DELIVERY_ASSISTANT_SYSTEM_PROMPT)
-            }
-        )
-
-    @Provides
-    @Singleton
-    fun provideNlpRepository(model: GenerativeModel): NlpRepository =
-        NlpRepositoryImpl(model)
+    fun provideNlpRepository(): NlpRepository =
+        NlpRepositoryImpl()
 
     /**
      * Provides a FirebaseRemoteConfig instance with in-app defaults.

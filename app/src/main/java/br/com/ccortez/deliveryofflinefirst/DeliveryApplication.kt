@@ -1,9 +1,11 @@
 package br.com.ccortez.deliveryofflinefirst
 
 import android.app.Application
-import android.content.Context
+import android.util.Base64
+import androidx.core.content.edit
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
+import com.google.firebase.FirebaseApp
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import dagger.hilt.android.HiltAndroidApp
@@ -41,21 +43,32 @@ class DeliveryApplication : Application(), Configuration.Provider {
      * it to Logcat (filter `DebugAppCheckProvider`). Copy that UUID, add it to
      * `local.properties` as `APP_CHECK_DEBUG_TOKEN=<uuid>`, and register it once in
      * Firebase Console → Build → App Check → Manage debug tokens.
+     *
+     * **File name format (Firebase App Check Debug SDK >= 18.0):** The SDK switched to a
+     * per-app SharedPreferences file named
+     * `com.google.firebase.appcheck.debug.store.{base64(appName)}+{base64(appId)}`
+     * with the key `com.google.firebase.appcheck.debug.DEBUG_SECRET`.
+     * We construct this name from the live [FirebaseApp] instance so the code stays correct
+     * even if the Firebase App name or App ID ever change.
      */
     private fun pinAppCheckDebugTokenIfConfigured() {
         val token = BuildConfig.APP_CHECK_DEBUG_TOKEN
         if (token.isBlank()) return
 
-        // The Firebase App Check Debug SDK stores the secret in SharedPreferences.
-        // We write to all known candidate file names to be resilient to SDK version changes.
-        listOf(
-            "com.google.firebase.appcheck.debug.store",
-            "com.google.firebase.appcheck",
-        ).forEach { prefsName ->
-            getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-                .edit()
-                .putString("firebase_app_check_debug_secret", token)
-                .apply()
+        val flags = Base64.NO_PADDING or Base64.NO_WRAP
+        fun String.b64() = Base64.encodeToString(toByteArray(Charsets.UTF_8), flags)
+
+        val firebaseApp = FirebaseApp.getInstance()
+        val perAppPrefsName =
+            "com.google.firebase.appcheck.debug.store.${firebaseApp.name.b64()}+${firebaseApp.options.applicationId.b64()}"
+
+        // Write to the current per-app file (Firebase >= 18) and the legacy flat file,
+        // covering both key names to be resilient across SDK version changes.
+        mapOf(
+            perAppPrefsName to "com.google.firebase.appcheck.debug.DEBUG_SECRET",
+            "com.google.firebase.appcheck.debug.store" to "firebase_app_check_debug_secret",
+        ).forEach { (prefsName, key) ->
+            getSharedPreferences(prefsName, MODE_PRIVATE).edit { putString(key, token) }
         }
     }
 

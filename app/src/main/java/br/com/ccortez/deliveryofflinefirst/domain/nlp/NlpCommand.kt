@@ -12,6 +12,9 @@ enum class NlpAction {
     @SerialName("CONCLUDE_DELIVERY")
     CONCLUDE_DELIVERY,
 
+    @SerialName("CONFERIR_ITEM")
+    CONFERIR_ITEM,
+
     @SerialName("UNKNOWN")
     UNKNOWN
 }
@@ -20,21 +23,25 @@ enum class NlpAction {
 data class NlpCommand(
     val action: NlpAction,
 
-    /** Populated only when action == SET_SEARCH_QUERY.
-     *  Injected directly into EntregasViewModel.onSearchQueryChange(). */
+    /** Populated only when action == SET_SEARCH_QUERY. */
     @SerialName("search_term")
     val searchTerm: String? = null,
 
-    /** Populated only when action == CONCLUDE_DELIVERY.
-     *  The app must resolve this name against the live list to obtain the entrega ID
-     *  before calling EntregasViewModel.concluirEntrega(id). */
+    /** Populated when action == CONCLUDE_DELIVERY or CONFERIR_ITEM (optional for CONFERIR_ITEM). */
     @SerialName("target_client")
     val targetClient: String? = null,
 
+    /** Populated only when action == CONFERIR_ITEM. The product keyword to match against item names. */
+    @SerialName("target_item")
+    val targetItem: String? = null,
+
+    /** Populated only when action == CONFERIR_ITEM. true = check, false = uncheck. */
+    @SerialName("item_conferido_state")
+    val itemConferidoState: Boolean? = null,
+
     /**
-     * Set to true when [action] is UNKNOWN due to a technical failure (network timeout,
-     * API error, JSON parse error) rather than the model genuinely not understanding
-     * the intent. Not serialized — populated only by `NlpRepositoryImpl.fallback()`.
+     * Set to true when [action] is UNKNOWN due to a technical failure rather than genuine
+     * intent ambiguity. Not serialized — populated only by `NlpRepositoryImpl.fallback()`.
      */
     @Transient
     val isError: Boolean = false

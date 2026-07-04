@@ -1106,18 +1106,22 @@ processarComandoNLP(comando)     ← EntregasViewModel
         ↓
 NlpRepository.interpretarComando()
         ↓
-Gemini 2.5 Flash (Firebase AI Logic, Google AI backend)
-  systemInstruction = NlpPrompts.DELIVERY_ASSISTANT_SYSTEM_PROMPT
-  responseMimeType  = "application/json"
+Stage 1 — Orchestrator (ORCHESTRATOR_ROUTER_PROMPT)
+  Gemini 2.5 Flash → {"route":"LOGISTICS"|"INVENTORY"|"UNKNOWN"}
+        ↓
+Stage 2 — Specialist Worker
+  LOGISTICS → LOGISTICS_WORKER_PROMPT   (SET_SEARCH_QUERY / CONCLUDE_DELIVERY)
+  INVENTORY → INVENTORY_WORKER_PROMPT   (CONFERIR_ITEM)
         ↓
 Raw JSON response  →  Json.decodeFromString<NlpCommand>()
         ↓
-NlpCommand(action, searchTerm?, targetClient?)
+NlpCommand(action, searchTerm?, targetClient?, targetItem?, itemConferidoState?)
         ↓
 when(action) {
-  SET_SEARCH_QUERY   → onSearchQueryChange(searchTerm)   — feeds reactive pipeline
-  CONCLUDE_DELIVERY  → resolve id from uiState.entregas  → concluirEntrega(id)
-  UNKNOWN            → ShowSnackbar("Não entendi o comando ou houve um erro.")
+  SET_SEARCH_QUERY  → onSearchQueryChange(searchTerm)    — feeds reactive pipeline
+  CONCLUDE_DELIVERY → resolve id from uiState.entregas   → concluirEntrega(id)
+  CONFERIR_ITEM     → global or client-scoped item search → atualizarConferido(id, state)
+  UNKNOWN           → ShowSnackbar("Não entendi o comando ou houve um erro.")
 }
 ```
 
@@ -1125,18 +1129,18 @@ when(action) {
 
 ```
 domain/nlp/
-  NlpAction.kt          ← enum: SET_SEARCH_QUERY | CONCLUDE_DELIVERY | UNKNOWN
-  NlpCommand.kt         ← @Serializable data class (kotlinx.serialization)
-  NlpPrompts.kt         ← system instructions constant
+  NlpAction.kt          ← enum: SET_SEARCH_QUERY | CONCLUDE_DELIVERY | CONFERIR_ITEM | UNKNOWN
+  NlpCommand.kt         ← @Serializable data class (+ targetItem, itemConferidoState)
+  NlpPrompts.kt         ← ORCHESTRATOR_ROUTER_PROMPT, LOGISTICS_WORKER_PROMPT, INVENTORY_WORKER_PROMPT
 
 domain/repository/
   NlpRepository.kt      ← suspend fun interpretarComando(comando: String): NlpCommand
 
 data/repository/
-  NlpRepositoryImpl.kt  ← calls GenerativeModel, parses JSON, always returns safe NlpCommand
+  NlpRepositoryImpl.kt  ← two-stage pipeline: orchestrator routes, worker produces NlpCommand
 
 di/
-  AppModule.kt          ← @Singleton GenerativeModel + NlpRepository providers
+  AppModule.kt          ← @Singleton NlpRepository (models built internally per stage)
 ```
 
 ### System Prompt design
@@ -1254,6 +1258,90 @@ Any input that doesn't match a delivery intent (e.g. `"qual o horário de funcio
 | `response.text == null` | Empty model response | `NlpCommand(UNKNOWN)` + `Log.w` |
 
 Filter Logcat by tag `NlpRepositoryImpl` to diagnose failures during development.
+
+### 🧪 Testing the Multi-Agent Pipeline — Practical Scenarios
+
+The scenarios below exercise every branch of the new orchestrator + worker architecture on the seed data. Run the app on a physical device or emulator and type each command into the NLP field.
+
+---
+
+#### Scenario 1 — Unambiguous Global Check (The Backpack)
+
+**Command:** `"Pode marcar a mochila estampada como checada"` (or simply `"conferi a mochila"`)
+
+**What happens end-to-end:**
+
+```
+Orchestrator  → route: INVENTORY
+                       ↓
+Inventory Worker → {"action":"CONFERIR_ITEM","target_item":"mochila","item_conferido_state":true}
+                       ↓
+ViewModel (Scenario B — no targetClient)
+  flatMap all deliveries → filter items containing "mochila" → 1 match found
+  (only Ana Paula has "Mochila Escolar Estampada" in seed data)
+                       ↓
+repository.atualizarConferido(item.id, true)   ← Room write
+  → Flow emits → card re-renders → checkbox checked, item name struck through
+  → Snackbar: "'Mochila Escolar Estampada' conferido."
+```
+
+**Expected visual result:** Ana Paula Ferreira's card auto-expands (item search), the backpack row gains a check, and its name is rendered with `TextDecoration.LineThrough`. The database is updated with a single targeted write.
+
+---
+
+#### Scenario 2 — Defensive Ambiguity Test
+
+**Command:** `"Conferi a caixa de papelão"`
+
+> To trigger this scenario intentionally, add a second delivery in the seed data that also contains an item with "caixa" in its name, or use a term that genuinely matches items in multiple deliveries.
+
+**What happens end-to-end:**
+
+```
+Orchestrator  → route: INVENTORY
+                       ↓
+Inventory Worker → {"action":"CONFERIR_ITEM","target_item":"caixa de papelão","item_conferido_state":true}
+                       ↓
+ViewModel (Scenario B — no targetClient)
+  flatMap all deliveries → filter items containing "caixa de papelão" → N > 1 matches found
+                       ↓
+No Room write — database is not touched
+  → Snackbar: "Existe mais de um item correspondente a 'caixa de papelão'.
+               Por favor, informe o nome do cliente."
+```
+
+**Expected visual result:** No checkbox changes on any card. The snackbar alert appears and nothing is written to Room — the guard prevents silent data corruption when multiple deliveries share similar item names.
+
+---
+
+#### Scenario 3 — Ambiguity Resolved with Direct Context
+
+**Command:** `"Marcar caixa de papelão da Ana Paula como concluída"`
+
+**What happens end-to-end:**
+
+```
+Orchestrator  → route: INVENTORY
+                       ↓
+Inventory Worker → {
+                     "action": "CONFERIR_ITEM",
+                     "target_item": "caixa de papelão",
+                     "target_client": "Ana Paula",
+                     "item_conferido_state": true
+                   }
+                       ↓
+ViewModel (Scenario A — targetClient is present)
+  firstOrNull { cliente.contains("Ana Paula", ignoreCase=true) } → Ana Paula Ferreira found
+  firstOrNull in her items { nome.contains("caixa de papelão", ignoreCase=true) } → item found
+                       ↓
+repository.atualizarConferido(item.id, true)
+  → Flow emits → card re-renders with strikethrough
+  → Snackbar: "'Caixa de Papelão 50×40×30 cm' conferido."
+```
+
+**Expected visual result:** Only Ana Paula Ferreira's item is updated. Other deliveries are untouched. This scenario demonstrates the full client-scoped disambiguation path (Scenario A) where the `targetClient` extracted by the Inventory Worker narrows the search to a single delivery before any item lookup occurs.
+
+---
 
 ### Firebase App Check (debug builds)
 

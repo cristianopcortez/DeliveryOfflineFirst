@@ -177,9 +177,11 @@ class EntregasViewModel @Inject constructor(
     }
 
     /**
-     * SET_SEARCH_QUERY → injects the extracted term into the debounce + flatMapLatest pipeline.
+     * SET_SEARCH_QUERY  → injects the extracted term into the debounce + flatMapLatest pipeline.
      * CONCLUDE_DELIVERY → resolves the client from [_uiState].entregas and delegates to [concluirEntrega].
-     * UNKNOWN → emits a one-shot snackbar event; the UI never crashes.
+     * CONFERIR_ITEM     → performs a scoped (Scenario A) or global (Scenario B) item search,
+     *                     then handles the result: update, ambiguity warning, or "not found" notice.
+     * UNKNOWN           → emits a one-shot snackbar event; the UI never crashes.
      */
     fun processarComandoNLP(comando: String) {
         if (comando.isBlank()) return
@@ -221,6 +223,75 @@ class EntregasViewModel @Inject constructor(
                             success = false
                         )
                     }
+                }
+                NlpAction.CONFERIR_ITEM -> {
+                    val targetItem = nlpCommand.targetItem
+                    val estado = nlpCommand.itemConferidoState ?: true
+
+                    if (targetItem.isNullOrBlank()) {
+                        _eventos.emit(EntregasEvent.ShowSnackbar("Não consegui identificar o produto a conferir."))
+                        return@launch
+                    }
+
+                    val todasEntregas = _uiState.value.entregas
+
+                    if (nlpCommand.targetClient != null) {
+                        // Scenario A: client specified — search only within that client's delivery
+                        val entregaDoCliente = todasEntregas.firstOrNull {
+                            it.entrega.cliente.contains(nlpCommand.targetClient, ignoreCase = true)
+                        }
+                        if (entregaDoCliente == null) {
+                            _eventos.emit(
+                                EntregasEvent.ShowSnackbar(
+                                    "Cliente '${nlpCommand.targetClient}' não encontrado."
+                                )
+                            )
+                            return@launch
+                        }
+                        val item = entregaDoCliente.itens.firstOrNull {
+                            it.nome.contains(targetItem, ignoreCase = true)
+                        }
+                        if (item != null) {
+                            repository.atualizarConferido(item.id, estado)
+                            val acao = if (estado) "conferido" else "desmarcado"
+                            _eventos.emit(EntregasEvent.ShowSnackbar("'${item.nome}' $acao."))
+                        } else {
+                            _eventos.emit(
+                                EntregasEvent.ShowSnackbar(
+                                    "Item '$targetItem' não encontrado para ${nlpCommand.targetClient}."
+                                )
+                            )
+                        }
+                    } else {
+                        // Scenario B: no client — global search across ALL deliveries
+                        val correspondentes = todasEntregas
+                            .flatMap { it.itens }
+                            .filter { it.nome.contains(targetItem, ignoreCase = true) }
+
+                        when (correspondentes.size) {
+                            0 -> _eventos.emit(
+                                EntregasEvent.ShowSnackbar(
+                                    "Nenhum item com '$targetItem' foi encontrado."
+                                )
+                            )
+                            1 -> {
+                                val item = correspondentes.first()
+                                repository.atualizarConferido(item.id, estado)
+                                val acao = if (estado) "conferido" else "desmarcado"
+                                _eventos.emit(EntregasEvent.ShowSnackbar("'${item.nome}' $acao."))
+                            }
+                            else -> _eventos.emit(
+                                EntregasEvent.ShowSnackbar(
+                                    "Existe mais de um item correspondente a '$targetItem'. " +
+                                    "Por favor, informe o nome do cliente."
+                                )
+                            )
+                        }
+                    }
+                    analyticsRepository.logNlpCommandResult(
+                        action = "CONFERIR_ITEM",
+                        success = true
+                    )
                 }
                 NlpAction.UNKNOWN -> {
                     val msg = if (nlpCommand.isError) {
@@ -307,6 +378,7 @@ class EntregasViewModel @Inject constructor(
                 ItemPedido("seed-2-c", "Mouse Logitech MX Master 3",             1, false),
                 ItemPedido("seed-2-d", "Teclado Mecânico Keychron K6",           1, false),
                 ItemPedido("seed-2-e", "Hub USB-C 7 portas",                     2, false),
+                ItemPedido("seed-2-f", "Caixa de Papelão 50×40×30 cm",           4, false),
             ),
 
             // João Silva — books and stationery
