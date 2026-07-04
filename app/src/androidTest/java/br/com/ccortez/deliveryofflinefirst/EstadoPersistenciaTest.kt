@@ -83,10 +83,10 @@ class EstadoPersistenciaTest {
     @Test
     fun dropdown_resetaParaTodosAposRotacao() {
         // Wait for seed data to be loaded from Room
-        // (EntregasViewModel.popularBancoSeVazio inserts "Ana Paula" among others)
+        // (EntregasViewModel.popularBancoSeVazio inserts "Ana Paula Ferreira" among others)
         composeTestRule.waitUntil(timeoutMillis = 5_000) {
             composeTestRule
-                .onAllNodesWithText("Ana Paula")
+                .onAllNodesWithText("Ana Paula Ferreira")
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
@@ -97,16 +97,16 @@ class EstadoPersistenciaTest {
 
         composeTestRule.waitForIdle()
 
-        // Click the menu item tagged "dropdown_item_Ana Paula" — avoids ambiguity with
-        // the delivery card that also contains the text "Ana Paula" in the list below
-        composeTestRule.onNodeWithTag("dropdown_item_Ana Paula")
+        // Click the menu item tagged "dropdown_item_Ana Paula Ferreira" — avoids ambiguity
+        // with the delivery card that also contains the client name in the list below
+        composeTestRule.onNodeWithTag("dropdown_item_Ana Paula Ferreira")
             .performClick()
 
         composeTestRule.waitForIdle()
 
-        // Confirms the dropdown shows "Ana Paula" before rotating
+        // Confirms the dropdown shows the full name before rotating
         composeTestRule.onNodeWithTag("dropdown_cliente")
-            .assertTextContains("Ana Paula")
+            .assertTextContains("Ana Paula Ferreira")
 
         // Simulate screen rotation
         composeTestRule.activityRule.scenario.recreate()

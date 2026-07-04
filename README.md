@@ -1633,6 +1633,235 @@ ORDER BY total DESC;
 
 ---
 
+## Testing
+
+### Strategy — unit tests vs instrumented tests
+
+The test suite splits responsibilities across two layers:
+
+| Layer | Runner | What it covers | Why |
+|---|---|---|---|
+| Unit tests (`src/test`) | JVM (no emulator) | Filter predicate logic | Instant feedback, no Android dependencies |
+| Instrumented tests (`src/androidTest`) | Emulator / device | UI + ViewModel + Room reactive chain, feature flag rendering | Proves the full stack works end-to-end in a real Android process |
+
+---
+
+### Unit tests — `FiltroBuscaTest`
+
+The `entregasFiltradas` reactive pipeline inside `EntregasViewModel` applies a predicate to every Room emission:
+
+```kotlin
+list.filter { ec ->
+    query.isBlank() ||
+    ec.entrega.cliente.contains(query, ignoreCase = true) ||
+    ec.entrega.endereco.contains(query, ignoreCase = true) ||
+    ec.itens.any { it.nome.contains(query, ignoreCase = true) }
+}
+```
+
+This predicate is pure logic over domain objects (`EntregaComProdutos`, `ItemPedido`) — no Android context, no coroutines, no Room. `FiltroBuscaTest` isolates and tests it directly:
+
+```kotlin
+class FiltroBuscaTest {
+
+    private fun filtrar(query: String): List<EntregaComProdutos> =
+        entregasFixture.filter { ec ->
+            query.isBlank() ||
+            ec.entrega.cliente.contains(query, ignoreCase = true) ||
+            ec.entrega.endereco.contains(query, ignoreCase = true) ||
+            ec.itens.any { it.nome.contains(query, ignoreCase = true) }
+        }
+
+    @Test fun `busca vazia retorna todas as entregas`() { }
+    @Test fun `busca por nome de cliente retorna apenas a entrega correspondente`() { }
+    @Test fun `busca por logradouro retorna apenas entrega com esse endereco`() { }
+    @Test fun `busca por nome de item retorna a entrega que contem o item`() { }
+    @Test fun `busca sem match em nenhum campo retorna lista vazia`() { }
+    // + 8 more cases covering case-insensitive, partial match, multi-result queries
+}
+```
+
+**13 tests, sub-millisecond execution.** No emulator spin-up. A change to the filter predicate breaks the relevant test immediately, before any instrumented test runs.
+
+---
+
+### Test doubles (fakes) — eliminating Firebase from instrumented tests
+
+The production `AppModule` wires three Firebase services: Remote Config, Firebase AI (Gemini), and Firebase Analytics. All three are inappropriate for automated tests:
+
+- Firebase services require a live network and valid API keys
+- Responses from Gemini are non-deterministic
+- Events sent to Firebase Analytics cannot be asserted in tests
+
+Three fakes in `androidTest/fake/` replace each service:
+
+#### `FakeNlpRepository` — mocks the Gemini AI engine
+
+In production the full call chain is:
+
+```
+NlpRepositoryImpl.interpretarComando(comando)
+    → GenerativeModel (Gemini 2.5 Flash via Firebase AI)
+        → real network call
+            → raw JSON response
+                → Json.decodeFromString<NlpCommand>()
+```
+
+`FakeNlpRepository` implements the same `NlpRepository` interface and returns a pre-configured `NlpCommand` immediately — no network call, no Gemini instance, no API key:
+
+```kotlin
+class FakeNlpRepository(
+    var response: NlpCommand = NlpCommand(action = NlpAction.UNKNOWN)
+) : NlpRepository {
+    override suspend fun interpretarComando(comando: String): NlpCommand = response
+}
+```
+
+Setting `response` before a test lets you simulate any AI outcome: a successful `SET_SEARCH_QUERY`, a `CONCLUDE_DELIVERY`, or an `UNKNOWN` error — all without touching the network.
+
+#### `FakeRemoteConfigRepository` — mocks the `nlp_enabled` feature flag
+
+In production:
+
+```
+RemoteConfigRepositoryImpl.isNlpEnabled()
+    → FirebaseRemoteConfig.fetchAndActivate()   ← real network call
+        → getBoolean("nlp_enabled")
+```
+
+`FakeRemoteConfigRepository` returns a hardcoded boolean synchronously:
+
+```kotlin
+class FakeRemoteConfigRepository(private val nlpEnabled: Boolean) : RemoteConfigRepository {
+    override suspend fun isNlpEnabled(): Boolean = nlpEnabled
+}
+```
+
+#### `FakeAnalyticsRepository` — no-op for Firebase Analytics
+
+All analytics methods are no-ops so `viewModelScope.launch { analyticsRepository.log…() }` calls succeed silently without sending events to Firebase:
+
+```kotlin
+class FakeAnalyticsRepository : AnalyticsRepository {
+    override fun logNlpConfigFetched(nlpEnabled: Boolean, trigger: String) = Unit
+    override fun logNlpCommandSubmitted() = Unit
+    override fun logNlpCommandResult(action: String, success: Boolean) = Unit
+    override fun setNlpFeatureUserProperty(enabled: Boolean) = Unit
+    override fun logSyncCompleted(quantity: Int) = Unit
+}
+```
+
+#### How the two Firebase AI fakes work together
+
+The two fakes serve different roles in the `nlp_enabled` flow:
+
+| Fake | Firebase service replaced | Controls |
+|---|---|---|
+| `FakeRemoteConfigRepository` | Firebase Remote Config | Whether the NLP UI (Send button, AI placeholder) is rendered at all |
+| `FakeNlpRepository` | Firebase AI / Gemini 2.5 Flash | What the UI does after the user submits a command |
+
+`FakeRemoteConfigRepository(nlpEnabled = false)` drives `_nlpEnabled = false` in the ViewModel → `EntregasScreen` renders the plain search UI. `FakeRemoteConfigRepository(nlpEnabled = true)` + `FakeNlpRepository(response = NlpCommand(SET_SEARCH_QUERY, "notebook"))` lets a test exercise the full NLP path without a real model.
+
+---
+
+### Instrumented tests — `@UninstallModules` + in-memory Room
+
+Both instrumented test files use `@UninstallModules(AppModule::class)` with an inner `@Module @InstallIn(SingletonComponent::class)` that replaces every production binding:
+
+```kotlin
+@HiltAndroidTest
+@UninstallModules(AppModule::class)
+class BuscaTextualTest {
+
+    @Module
+    @InstallIn(SingletonComponent::class)
+    object TestModule {
+
+        // In-memory Room: fresh schema on every process start, no migration needed,
+        // no leftover data from previous test runs
+        @Provides @Singleton
+        fun provideAppDatabase(@ApplicationContext ctx: Context): AppDatabase =
+            Room.inMemoryDatabaseBuilder(ctx, AppDatabase::class.java).build()
+
+        @Provides @Singleton
+        fun provideNlpRepository(): NlpRepository = FakeNlpRepository()
+
+        @Provides @Singleton
+        fun provideRemoteConfigRepository(): RemoteConfigRepository =
+            FakeRemoteConfigRepository(nlpEnabled = true)
+
+        @Provides @Singleton
+        fun provideAnalyticsRepository(): AnalyticsRepository = FakeAnalyticsRepository()
+
+        // ... EntregaDao, EntregaRepository, SettingsDataStore, SettingsRepository
+    }
+}
+```
+
+#### `BuscaTextualTest` — search filter end-to-end (5 tests)
+
+Proves the reactive chain works in a real Android process:
+
+```
+OutlinedTextField (testTag: "campo_busca")
+  → onValueChange → EntregasViewModel.onSearchQueryChange()
+    → _searchQuery StateFlow
+      → debounce(300ms) → flatMapLatest
+        → Room (in-memory) emits filtered list
+          → entregasFiltradas StateFlow
+            → collectAsStateWithLifecycle → LazyColumn recomposes
+```
+
+| Test | Query typed | Expected result |
+|---|---|---|
+| `busca_vazia_exibe_todas_as_entregas` | cleared after "Carlos" | All 7 seed deliveries visible again |
+| `busca_por_nome_de_cliente_filtra_a_lista` | `"Carlos"` | Only Carlos Lima shown |
+| `busca_por_endereco_filtra_a_lista` | `"Alameda Santos"` | Only Roberto Alves shown |
+| `busca_por_nome_de_item_filtra_a_lista` | `"Notebook Dell"` | Only Carlos Lima shown (item match, not name/address) |
+| `busca_por_nome_de_item_expande_card_automaticamente` | `"Notebook"` | Carlos Lima card auto-expanded, "Notebook Dell XPS 15 (i7 / 32GB)" visible |
+
+`waitUntil` instead of `Thread.sleep` is used throughout — the test waits for the debounce window and coroutine dispatch without adding arbitrary delays.
+
+#### `NlpFlagUiTest` — feature flag UI (4 tests, 2 classes)
+
+Two separate test classes set `nlpEnabled` to opposite values and assert the resulting UI:
+
+```kotlin
+// NlpHabilitadoTest — FakeRemoteConfigRepository(nlpEnabled = true)
+@Test fun nlp_habilitado_exibe_botao_enviar()
+@Test fun nlp_habilitado_exibe_placeholder_com_descricao_de_ia()
+
+// NlpDesabilitadoTest — FakeRemoteConfigRepository(nlpEnabled = false)
+@Test fun nlp_desabilitado_oculta_botao_enviar()
+@Test fun nlp_desabilitado_exibe_placeholder_simples()
+```
+
+The `nlp_desabilitado_oculta_botao_enviar` test uses `waitUntil` to wait past the ViewModel's optimistic default (`_nlpEnabled = MutableStateFlow(true)`) before asserting:
+
+```kotlin
+// Wait for the coroutine to overwrite the optimistic default with false
+composeTestRule.waitUntil(timeoutMillis = 3_000) {
+    composeTestRule
+        .onAllNodesWithContentDescription("Enviar comando para IA")
+        .fetchSemanticsNodes()
+        .isEmpty()
+}
+```
+
+This makes the test robust against coroutine scheduling — it never asserts on the initial value, only on the settled state after `fetchRemoteConfig()` completes.
+
+---
+
+### Test infrastructure (pre-existing)
+
+| File | Purpose |
+|---|---|
+| `HiltTestRunner` | Replaces the default test runner with `HiltTestApp_Application` |
+| `HiltTestApp` | `@CustomTestApplication(WorkerTestApplication::class)` — triggers Hilt codegen |
+| `WorkerTestApplication` | Provides a no-op `WorkerFactory` so `@HiltWorker` classes don't crash in tests that don't exercise WorkManager |
+
+---
+
 ## Key dependency versions
 
 | Library | Version |

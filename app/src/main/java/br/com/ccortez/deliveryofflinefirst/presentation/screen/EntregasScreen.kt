@@ -284,7 +284,8 @@ fun EntregasScreen(
                         LazyColumn(
                             state = listState,
                             contentPadding = PaddingValues(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.testTag("lista_entregas")
                         ) {
                             // stable key = delivery id — prevents Layout Shift when expanding items
                             items(
