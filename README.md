@@ -259,6 +259,109 @@ UI emits event  →  viewModel.concluirEntrega(id)
 
 The UI only reads state and emits events. The ViewModel is the only one that mutates state.
 
+### DevEx & Design-to-Code: Pipeline com Figma MCP Server
+
+The delivery list frame was reimplemented as a stateless Material 3 composable through a design-to-code pipeline backed by the Figma Model Context Protocol server. The proof of concept and the full composable live only on `spike/figma-mcp-dev-flow`.
+
+That isolation is deliberate. `develop` keeps the production `EntregasScreen`, the ViewModels, and the instrumented suite (`BuscaTextualTest`, `NlpFlagUiTest`, `NlpConferirItemUiTest`) untouched while the generated UI is reviewed. The spike can be previewed, diffed, and discarded without a red build on the main line. Merging it later is a screen swap, not a rewrite of the data flow.
+
+#### Architectural pipeline
+
+The agent reads a structured node tree. The composable is the only artifact that lands in the repo.
+
+```
+Figma file
+  Plugin API — programmatic inspection of the "EntregasScreen" frame (node 1:2, 360dp)
+        │
+        ▼
+figma-developer-mcp
+  Local MCP server. Transport: stdio. Auth: Personal Access Token (file read).
+  The token stays on the developer machine; the IDE does not broker it through a remote host.
+        │
+        ▼
+Cursor IDE
+  Tool: get_figma_data — remote node inspection (Auto Layout, fills, type styles, component names)
+        │
+        ▼
+presentation/screen/EntregasContent.kt
+  Stateless Material 3 composable + @Preview. No ViewModel, no Hilt, no Room.
+```
+
+| Stage | What it contributes | Trade-off |
+|---|---|---|
+| Figma Plugin API | Addressable nodes and Auto Layout metadata (padding, gap, sizing mode) instead of a screenshot | Absolute widths in the dump are layout artifacts, not design intent — they must be rejected in review |
+| `figma-developer-mcp` over stdio | Structured tool calls from the IDE with a local PAT | A remote MCP host would put the token on another machine; stdio keeps the trust boundary on the laptop |
+| `get_figma_data` | One frame inspection: hierarchy, fills, typography, component names | The model still maps components; it does not invent the design system. Wrong token choices are a review defect, not a Figma defect |
+| `EntregasContent.kt` | The reviewable output: hoisted state, M3 tokens, preserved `testTag`s, a 360dp preview | Generation stops at the UI. Search debounce, NLP, and WorkManager stay in the ViewModel on the main branch |
+
+#### Figma → Jetpack Compose
+
+The frame is 360dp wide. Spacing in the table is what the node tree reported and what the composable actually uses.
+
+| Figma | Compose | Notes |
+|---|---|---|
+| `TopAppBar` (64dp, title + driver subtitle, settings action) | `TopAppBar` + `TopAppBarDefaults.topAppBarColors(containerColor = surface)` | `titleLarge` for "Entregas", `bodySmall` + `onSurfaceVariant` for the driver name |
+| Client filter (outlined, 56dp, floating "Filtrar" label) | `ExposedDropdownMenuBox` + read-only `OutlinedTextField` | `menuAnchor(PrimaryNotEditable)`. Open/close stays in `remember` — ephemeral, not business state. `testTag("dropdown_cliente")` and `testTag("dropdown_item_$cliente")` |
+| `campo_busca` and quick-note field | `OutlinedTextField` | Search keeps the NLP placeholder, send icon, and IME Search. Note field is `testTag("campo_not_lived_in_viewmodel")`. Both use `Modifier.fillMaxWidth()` |
+| Pending-sync badge and sync status banner | `Surface` on M3 containers | Badge: `errorContainer` / `onErrorContainer`, `shapes.small`. Banner: `primaryContainer`, `secondaryContainer`, `tertiaryContainer`, or `errorContainer` by status |
+| `ListaBox` / `lista_entregas` (padding 16, gap 8) and delivery card (radius 12, ~1dp elevation, 1dp stroke) | `LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp))` and a level-1 `Card` | `contentPadding = 16.dp`, `key = { it.entrega.id }`, `testTag("lista_entregas")`. See the card decision below |
+
+#### Engineering decisions
+
+**Auto Layout artifacts → `Modifier.fillMaxWidth()`.** The plugin dump exported fixed slot widths (18dp and 30dp) on rows that are horizontal Auto Layout with a fill child. Copying those widths would pin the 360dp frame to the Figma artboard and break any other window size. The composable keeps the reported padding and gap, and stretches the row with `fillMaxWidth()` plus `weight(1f)` on the text. Fixed dp remains only where the spec is a real control size (48dp icon button, 56dp field, 1dp stroke).
+
+**Material 3 tokens, not hex pasted from the file.** Figma fills were matched to the existing scheme instead of hardcoded colors:
+
+| Figma | Token | Where |
+|---|---|---|
+| `#F7F2FA` | `surfaceContainerLow` | Card container |
+| `#CAC4D0` | `outlineVariant` | Card stroke and item divider |
+| `#F9DEDC` / `#410E0B` | `errorContainer` / `onErrorContainer` | Pending-sync badge |
+| `#6750A4` | `primary` | Enabled "Concluir" button |
+| `#E7E0EC` / `#49454F` | `surfaceVariant` / `onSurfaceVariant` | Disabled button |
+
+The preview opts out of dynamic color:
+
+```kotlin
+@Preview(showBackground = true, widthDp = 360, heightDp = 1280)
+@Composable
+private fun EntregasContentPreview() {
+    DeliveryOfflineFirstTheme(dynamicColor = false) {
+        EntregasContent(/* frame data */)
+    }
+}
+```
+
+`dynamicColor = false` locks the preview to the same baseline tokens as the file. The host wallpaper cannot recolor the surface, so a visual diff against the Figma frame stays valid.
+
+**Level-1 card with an explicit stroke.** The frame specifies ~1dp elevation and a 1dp stroke. `ElevatedCard` exposes elevation and no `border` parameter, so the composable uses `Card` with `cardElevation(1.dp)`, `BorderStroke(1.dp, outlineVariant)`, `surfaceContainerLow`, and `shapes.medium` (12dp). Elevation and the stroke both survive.
+
+**State hoisting — UI fully decoupled from the ViewModel.** `EntregasContent` receives the list, filter, search query, quick note, pending count, and sync banner, and it emits callbacks (`onSearchQueryChange`, `onConcluir`, `onConferirItem`, …). Consequences:
+
+- `@Preview` renders the Figma dataset with empty lambdas. No Hilt graph, no Room, no Firebase.
+- Visual review is a split editor: source on the left, rendered preview on the right.
+- The production screen can adopt the composable later by passing `collectAsStateWithLifecycle()` values down. The unidirectional flow documented above does not change.
+
+The dropdown's `expanded` flag stays in `remember` inside `ClienteFilterDropdownContent`. It is the same rule as the rest of the screen: ephemeral open/close does not belong in the ViewModel.
+
+**`testTag`s kept verbatim.** Instrumented tests find nodes by tag, not by structure. The spike copies the production tags so a later merge does not invalidate the suite:
+
+| Tag | Node |
+|---|---|
+| `campo_busca` | Search / NLP field |
+| `campo_not_lived_in_viewmodel` | Quick note |
+| `lista_entregas` | `LazyColumn` |
+| `dropdown_cliente` | Client filter field |
+| `dropdown_item_$cliente` | Each dropdown row |
+
+#### Evidence
+
+Android Studio, `EntregasContent.kt` on the left and the `@Preview` (360×1280, `dynamicColor = false`) on the right:
+
+![Figma MCP Design to Code Preview](docs/figma-mcp-compose-preview.jpg)
+
+> **Rule of thumb:** use the MCP server to read the node tree, then review sizing mode and tokens before accepting generated modifiers. The spike branch is the containment boundary — assisted generation does not land on the branch that the test suite guards.
+
 ---
 
 ## Coroutines & Flow
