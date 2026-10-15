@@ -56,6 +56,76 @@ class ConferirItemOutboxTest {
         assertTrue(todas.getValue("e1").itens.single().conferido)
         assertFalse("parent must be pending sync", todas.getValue("e1").entrega.sincronizada)
         assertTrue("unrelated delivery must stay synced", todas.getValue("e2").entrega.sincronizada)
-        assertEquals(listOf("e1"), dao.listarPendentes().map { it.id })
+        assertEquals(listOf("e1"), dao.listarPendentes().map { it.entrega.id })
+    }
+
+    // ── R2: a delivery can NEVER be concluded with unchecked items ─────────────────
+
+    @Test
+    fun concluirEntrega_recusadaQuandoHaItensPendentes() = runBlocking {
+        dao.inserirTodas(listOf(EntregaEntity("e1", "Ana", "Rua A", "Pendente", uuid = "u1")))
+        dao.inserirItens(
+            listOf(
+                ItemPedidoEntity("i1", "e1", "A", 1, conferido = true),
+                ItemPedidoEntity("i2", "e1", "B", 1, conferido = false)
+            )
+        )
+
+        assertEquals(0, dao.concluirEntregaSeConferida("e1", 1L))
+        assertEquals(1, dao.contarItensPendentes("e1"))
+        assertEquals("Pendente", dao.observarTodas().first().single().entrega.status)
+    }
+
+    @Test
+    fun concluirEntrega_permitidaQuandoTodosItensConferidos_eEntraNoOutbox() = runBlocking {
+        dao.inserirTodas(listOf(EntregaEntity("e1", "Ana", "Rua A", "Pendente", uuid = "u1")))
+        dao.inserirItens(listOf(ItemPedidoEntity("i1", "e1", "A", 1, conferido = true)))
+
+        assertEquals(1, dao.concluirEntregaSeConferida("e1", 1L))
+
+        val entrega = dao.observarTodas().first().single().entrega
+        assertEquals("Concluída", entrega.status)
+        assertFalse(entrega.sincronizada)
+    }
+
+    // ── Sync payload: pending deliveries carry their items ─────────────────────────
+
+    @Test
+    fun listarPendentes_incluiItensDaEntrega() = runBlocking {
+        dao.inserirTodas(listOf(EntregaEntity("e1", "Ana", "Rua A", "Pendente", sincronizada = false, uuid = "u1")))
+        dao.inserirItens(
+            listOf(
+                ItemPedidoEntity("i1", "e1", "A", 1, conferido = true),
+                ItemPedidoEntity("i2", "e1", "B", 2, conferido = false)
+            )
+        )
+
+        val pendentes = dao.listarPendentes()
+
+        assertEquals(1, pendentes.size)
+        assertEquals(setOf("i1", "i2"), pendentes.single().itens.map { it.id }.toSet())
+    }
+
+    // ── R1: seed is all-or-nothing and only runs on an empty database ──────────────
+
+    @Test
+    fun semearSeVazio_gravaEntregasEItensEUmaUnicaVez() = runBlocking {
+        val entregas = listOf(EntregaEntity("s1", "Ana", "Rua A", "Pendente", uuid = "u1"))
+        val itens = listOf(ItemPedidoEntity("s1-a", "s1", "A", 1, conferido = false))
+
+        assertTrue(dao.semearSeVazio(entregas, itens))
+        assertFalse("second seed must be a no-op", dao.semearSeVazio(entregas, itens))
+        assertEquals(1, dao.observarTodas().first().single().itens.size)
+    }
+
+    @Test
+    fun semearSeVazio_falhaNoMeioNaoDeixaEntregasSemItens() = runBlocking {
+        val entregas = listOf(EntregaEntity("s1", "Ana", "Rua A", "Pendente", uuid = "u1"))
+        // FK violation: item points to a delivery that does not exist -> whole transaction rolls back.
+        val itensInvalidos = listOf(ItemPedidoEntity("x-a", "inexistente", "A", 1, conferido = false))
+
+        runCatching { dao.semearSeVazio(entregas, itensInvalidos) }
+
+        assertEquals("rollback expected: no orphan deliveries", 0, dao.contarEntregas())
     }
 }

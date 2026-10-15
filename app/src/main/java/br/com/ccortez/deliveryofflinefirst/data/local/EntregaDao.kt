@@ -28,12 +28,37 @@ interface EntregaDao {
     @Query("SELECT COUNT(*) FROM entrega")
     suspend fun contarEntregas(): Int
 
-    @Query("UPDATE entrega SET status = 'Concluída', sincronizada = 0, horarioConclusao = :timestamp WHERE id = :id")
-    suspend fun concluirEntrega(id: String, timestamp: Long)
+    /**
+     * Single atomic statement: concludes the delivery ONLY if it has no unchecked item.
+     * Returns the number of updated rows (1 = concluded, 0 = not found OR items pending).
+     * Business invariant lives in SQL so no caller (UI, NLP, tests) can bypass it.
+     */
+    @Query(
+        "UPDATE entrega SET status = 'Concluída', sincronizada = 0, horarioConclusao = :timestamp " +
+            "WHERE id = :id AND NOT EXISTS " +
+            "(SELECT 1 FROM item_pedido WHERE entregaId = :id AND conferido = 0)"
+    )
+    suspend fun concluirEntregaSeConferida(id: String, timestamp: Long): Int
 
-    // Returns EntregaEntity only — SyncWorker only needs delivery fields for sync
+    @Query("SELECT COUNT(*) FROM item_pedido WHERE entregaId = :id AND conferido = 0")
+    suspend fun contarItensPendentes(id: String): Int
+
+    /** Outbox payload: pending deliveries together with their items (full state for the server). */
+    @Transaction
     @Query("SELECT * FROM entrega WHERE sincronizada = 0")
-    suspend fun listarPendentes(): List<EntregaEntity>
+    suspend fun listarPendentes(): List<EntregaComProdutosEntity>
+
+    /**
+     * Seed in ONE transaction (all-or-nothing). A crash between the two inserts can no longer
+     * leave deliveries without items behind the `contarEntregas() > 0` guard.
+     */
+    @Transaction
+    suspend fun semearSeVazio(entregas: List<EntregaEntity>, itens: List<ItemPedidoEntity>): Boolean {
+        if (contarEntregas() > 0) return false
+        inserirTodas(entregas)
+        inserirItens(itens)
+        return true
+    }
 
     @Query("UPDATE entrega SET sincronizada = 1 WHERE uuid = :uuid")
     suspend fun marcarSincronizadaPorUuid(uuid: String)
