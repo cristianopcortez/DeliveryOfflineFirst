@@ -45,7 +45,7 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         dao.marcarTodasSincronizadas()
 
     override suspend fun atualizarConferido(itemId: String, conferido: Boolean) =
-        dao.atualizarConferido(itemId, conferido)
+        dao.atualizarConferidoMarcandoPendente(itemId, conferido)
 
     override suspend fun contarEntregas(): Int =
         dao.contarEntregas()

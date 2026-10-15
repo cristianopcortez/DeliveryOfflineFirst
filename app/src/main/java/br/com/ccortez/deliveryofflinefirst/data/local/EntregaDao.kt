@@ -43,4 +43,21 @@ interface EntregaDao {
 
     @Query("UPDATE item_pedido SET conferido = :conferido WHERE id = :itemId")
     suspend fun atualizarConferido(itemId: String, conferido: Boolean)
+
+    /** Outbox: flags the parent delivery as pending sync (sincronizada = 0) given one of its items. */
+    @Query(
+        "UPDATE entrega SET sincronizada = 0 " +
+            "WHERE id = (SELECT entregaId FROM item_pedido WHERE id = :itemId)"
+    )
+    suspend fun marcarEntregaPaiComoPendente(itemId: String)
+
+    /**
+     * Atomically updates the item check flag AND flags the parent delivery as pending sync.
+     * Without the transaction a crash between the two writes would leave the change outside the outbox.
+     */
+    @Transaction
+    suspend fun atualizarConferidoMarcandoPendente(itemId: String, conferido: Boolean) {
+        atualizarConferido(itemId, conferido)
+        marcarEntregaPaiComoPendente(itemId)
+    }
 }
