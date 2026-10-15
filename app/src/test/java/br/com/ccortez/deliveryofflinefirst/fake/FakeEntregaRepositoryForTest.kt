@@ -3,6 +3,7 @@ package br.com.ccortez.deliveryofflinefirst.fake
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
 import br.com.ccortez.deliveryofflinefirst.domain.model.ItemPedido
+import br.com.ccortez.deliveryofflinefirst.domain.model.ResultadoConclusao
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -37,8 +38,12 @@ class FakeEntregaRepositoryForTest(
     override suspend fun inserirTodas(entregas: List<Entrega>) = Unit
     override suspend fun inserirItens(entregaId: String, itens: List<ItemPedido>) = Unit
     override suspend fun contarEntregas(): Int = _data.value.size
-    override suspend fun concluirEntrega(id: String) = Unit
-    override suspend fun listarPendentes(): List<Entrega> = emptyList()
+    override suspend fun concluirEntrega(id: String): ResultadoConclusao = ResultadoConclusao.CONCLUIDA
+    override suspend fun listarPendentes(): List<EntregaComProdutos> = emptyList()
+    override suspend fun semearSeVazio(
+        entregas: List<Entrega>,
+        itens: Map<String, List<ItemPedido>>
+    ): Boolean = false
     override suspend fun marcarSincronizadaPorUuid(uuid: String) = Unit
     override suspend fun marcarTodasSincronizadas() = Unit
 

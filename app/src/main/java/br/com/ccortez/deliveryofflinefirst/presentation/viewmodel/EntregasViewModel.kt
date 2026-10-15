@@ -14,6 +14,7 @@ import br.com.ccortez.deliveryofflinefirst.data.worker.SyncWorker
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
 import br.com.ccortez.deliveryofflinefirst.domain.model.ItemPedido
+import br.com.ccortez.deliveryofflinefirst.domain.model.ResultadoConclusao
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.data.repository.AnalyticsRepositoryImpl
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
@@ -158,12 +159,30 @@ class EntregasViewModel @Inject constructor(
     }
 
     fun concluirEntrega(id: String) {
-        viewModelScope.launch {
-            repository.concluirEntrega(id)
-            // SharedFlow emits the event; the screen collects it via LaunchedEffect and shows the Snackbar
-            _eventos.emit(EntregasEvent.ShowSnackbar("Entrega concluída. Sincronizará quando houver rede."))
-            agendarSync()
+        viewModelScope.launch { tentarConcluirEntrega(id) }
+    }
+
+    /**
+     * Single entry point for concluding a delivery (UI button AND NLP CONCLUDE_DELIVERY).
+     * The "all items checked" invariant is enforced by the repository; here we only react to it.
+     * Returns true only when the delivery was actually concluded.
+     */
+    private suspend fun tentarConcluirEntrega(id: String): Boolean {
+        when (repository.concluirEntrega(id)) {
+            ResultadoConclusao.CONCLUIDA -> Unit
+            ResultadoConclusao.ITENS_PENDENTES -> {
+                _eventos.emit(EntregasEvent.ShowSnackbar("Confira todos os itens antes de concluir a entrega."))
+                return false
+            }
+            ResultadoConclusao.NAO_ENCONTRADA -> {
+                _eventos.emit(EntregasEvent.ShowSnackbar("Entrega não encontrada."))
+                return false
+            }
         }
+        // SharedFlow emits the event; the screen collects it via LaunchedEffect and shows the Snackbar
+        _eventos.emit(EntregasEvent.ShowSnackbar("Entrega concluída. Sincronizará quando houver rede."))
+        agendarSync()
+        return true
     }
 
     /**
@@ -207,10 +226,11 @@ class EntregasViewModel @Inject constructor(
                         it.entrega.cliente.equals(nlpCommand.targetClient, ignoreCase = true)
                     }
                     if (entregaComProdutos != null) {
-                        concluirEntrega(entregaComProdutos.entrega.id)
+                        // Same guarded path as the UI button: refused when items are unchecked.
+                        val concluida = tentarConcluirEntrega(entregaComProdutos.entrega.id)
                         analyticsRepository.logNlpCommandResult(
                             action = AnalyticsRepositoryImpl.ACTION_CONCLUDE_DELIVERY,
-                            success = true
+                            success = concluida
                         )
                     } else {
                         _eventos.emit(
@@ -335,12 +355,8 @@ class EntregasViewModel @Inject constructor(
      */
     private fun popularBancoSeVazio() {
         viewModelScope.launch {
-            if (repository.contarEntregas() > 0) return@launch
-
-            repository.inserirTodas(entregasSeed)
-            itensSeed.forEach { (entregaId, itens) ->
-                repository.inserirItens(entregaId, itens)
-            }
+            // One atomic transaction in the data layer: all deliveries + items, or nothing (R1).
+            repository.semearSeVazio(entregasSeed, itensSeed)
         }
     }
 
