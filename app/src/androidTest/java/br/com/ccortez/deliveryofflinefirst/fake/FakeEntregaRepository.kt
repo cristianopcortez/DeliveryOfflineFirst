@@ -65,6 +65,8 @@ class FakeEntregaRepository : EntregaRepository {
         itens: Map<String, List<ItemPedido>>
     ): Boolean = false
 
+    override suspend fun semearDemonstracaoSeVazio(): Boolean = false
+
     override suspend fun marcarSincronizadaPorUuid(uuid: String) = Unit
 
     override suspend fun marcarTodasSincronizadas() = Unit

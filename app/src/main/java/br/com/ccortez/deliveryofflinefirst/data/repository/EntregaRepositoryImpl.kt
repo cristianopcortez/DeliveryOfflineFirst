@@ -1,6 +1,7 @@
 package br.com.ccortez.deliveryofflinefirst.data.repository
 
 import br.com.ccortez.deliveryofflinefirst.data.local.EntregaDao
+import br.com.ccortez.deliveryofflinefirst.data.seed.EntregaSeed
 import br.com.ccortez.deliveryofflinefirst.data.local.EntregaComProdutosEntity
 import br.com.ccortez.deliveryofflinefirst.data.local.EntregaEntity
 import br.com.ccortez.deliveryofflinefirst.data.local.ItemPedidoEntity
@@ -45,6 +46,9 @@ class EntregaRepositoryImpl(private val dao: EntregaDao) : EntregaRepository {
         entregas = entregas.map { it.toEntity() },
         itens = itens.flatMap { (entregaId, lista) -> lista.map { it.toEntity(entregaId) } }
     )
+
+    override suspend fun semearDemonstracaoSeVazio(): Boolean =
+        semearSeVazio(EntregaSeed.entregas, EntregaSeed.itens)
 
     override suspend fun marcarSincronizadaPorUuid(uuid: String) =
         dao.marcarSincronizadaPorUuid(uuid)
