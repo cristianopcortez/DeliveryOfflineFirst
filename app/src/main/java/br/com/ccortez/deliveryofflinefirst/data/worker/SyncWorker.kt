@@ -46,8 +46,9 @@ class SyncWorker @AssistedInject constructor(
                 // In a real app: api.enviar(payload, idempotencyKey = entrega.uuid)
                 // The server deduplicates by UUID — if this Worker runs twice due to a
                 // crash after POST but before the next line, the second POST is a no-op.
-                pendentes.forEach { entrega ->
-                    Log.d(TAG, "POST /entregas idempotency-key=${entrega.uuid}")
+                pendentes.forEach { (entrega, itens) ->
+                    // Payload = delivery + items (full state), so the server sees item checks too.
+                    Log.d(TAG, "POST /entregas idempotency-key=${entrega.uuid} items=${itens.size}")
                     // Mark synced only AFTER the simulated ACK — outbox contract:
                     // entry stays in queue until the server confirms receipt.
                     repository.marcarSincronizadaPorUuid(entrega.uuid)
