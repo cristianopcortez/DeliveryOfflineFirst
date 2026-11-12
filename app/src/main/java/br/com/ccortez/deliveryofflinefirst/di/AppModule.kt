@@ -16,6 +16,8 @@ import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
+import br.com.ccortez.deliveryofflinefirst.data.worker.WorkManagerSyncScheduler
+import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncScheduler
 import com.google.firebase.analytics.FirebaseAnalytics
 import br.com.ccortez.deliveryofflinefirst.BuildConfig
 import com.google.firebase.Firebase
@@ -41,6 +43,11 @@ object AppModule {
     @Provides
     fun provideEntregaDao(db: AppDatabase): EntregaDao =
         db.entregaDao()
+
+    @Provides
+    @Singleton
+    fun provideSyncScheduler(@ApplicationContext context: Context): SyncScheduler =
+        WorkManagerSyncScheduler.create(context)
 
     @Provides
     @Singleton

@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import br.com.ccortez.deliveryofflinefirst.BuildConfig
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import dagger.assisted.Assisted
@@ -34,12 +35,8 @@ class SyncWorker @AssistedInject constructor(
             }
 
             Log.d(TAG, "Syncing ${pendentes.size} pending deliveries...")
-            delay(2_000) // simulates network latency
 
-            if (Random.nextFloat() < 0.3f) {
-                // 30% random failure — WorkManager retries with exponential backoff.
-                // Deliveries stay in the outbox (sincronizada=0) and are retried intact.
-                Log.w(TAG, "Simulated network failure — scheduling retry")
+            if (BuildConfig.DEBUG && !redeSimuladaOk()) {
                 Result.retry()
             } else {
                 // Happy path: process each delivery individually.
@@ -62,5 +59,13 @@ class SyncWorker @AssistedInject constructor(
             Log.e(TAG, "Unexpected error during sync", e)
             Result.retry()
         }
+    }
+
+    /** Debug-only stand-in for the network. Release builds skip it and always drain the outbox. */
+    private suspend fun redeSimuladaOk(): Boolean {
+        delay(2_000)
+        val ok = Random.nextFloat() >= 0.3f
+        if (!ok) Log.w(TAG, "Simulated network failure — scheduling retry")
+        return ok
     }
 }

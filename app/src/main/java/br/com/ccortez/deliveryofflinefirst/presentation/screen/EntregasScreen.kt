@@ -65,7 +65,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.work.WorkInfo
+import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncEstado
 import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
 import br.com.ccortez.deliveryofflinefirst.domain.model.ItemPedido
 import java.text.SimpleDateFormat
@@ -334,19 +334,19 @@ fun EntregasScreen(
 
 @Composable
 private fun SyncStatusBanner(
-    syncStatus: WorkInfo.State?,
+    syncStatus: SyncEstado?,
     modifier: Modifier = Modifier
 ) {
     val (texto, cor) = when (syncStatus) {
-        WorkInfo.State.RUNNING ->
+        SyncEstado.EM_ANDAMENTO ->
             "↻ Syncing..." to MaterialTheme.colorScheme.primaryContainer
-        WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+        SyncEstado.AGUARDANDO_REDE ->
             "⏳ Sync pending — waiting for network" to MaterialTheme.colorScheme.secondaryContainer
-        WorkInfo.State.SUCCEEDED ->
+        SyncEstado.CONCLUIDA ->
             "✓ All synced" to MaterialTheme.colorScheme.tertiaryContainer
-        WorkInfo.State.FAILED ->
+        SyncEstado.FALHOU ->
             "✗ Sync failed" to MaterialTheme.colorScheme.errorContainer
-        else -> return
+        null -> return
     }
 
     Surface(
