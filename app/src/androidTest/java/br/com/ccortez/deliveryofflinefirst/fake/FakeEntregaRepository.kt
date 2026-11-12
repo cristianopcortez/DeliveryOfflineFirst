@@ -3,6 +3,7 @@ package br.com.ccortez.deliveryofflinefirst.fake
 import br.com.ccortez.deliveryofflinefirst.domain.model.Entrega
 import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
 import br.com.ccortez.deliveryofflinefirst.domain.model.ItemPedido
+import br.com.ccortez.deliveryofflinefirst.domain.model.ResultadoConclusao
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,16 +45,25 @@ class FakeEntregaRepository : EntregaRepository {
 
     override suspend fun contarEntregas(): Int = _entregas.value.size
 
-    override suspend fun concluirEntrega(id: String) {
+    override suspend fun concluirEntrega(id: String): ResultadoConclusao {
+        val alvo = _entregas.value.firstOrNull { it.entrega.id == id }
+            ?: return ResultadoConclusao.NAO_ENCONTRADA
+        if (alvo.itens.any { !it.conferido }) return ResultadoConclusao.ITENS_PENDENTES
         _entregas.value = _entregas.value.map { ec ->
             if (ec.entrega.id == id)
                 ec.copy(entrega = ec.entrega.copy(status = "Concluída"))
             else ec
         }
+        return ResultadoConclusao.CONCLUIDA
     }
 
-    override suspend fun listarPendentes(): List<Entrega> =
-        _entregas.value.map { it.entrega }.filter { it.status != "Concluída" }
+    override suspend fun listarPendentes(): List<EntregaComProdutos> =
+        _entregas.value.filter { it.entrega.status != "Concluída" }
+
+    override suspend fun semearSeVazio(
+        entregas: List<Entrega>,
+        itens: Map<String, List<ItemPedido>>
+    ): Boolean = false
 
     override suspend fun marcarSincronizadaPorUuid(uuid: String) = Unit
 

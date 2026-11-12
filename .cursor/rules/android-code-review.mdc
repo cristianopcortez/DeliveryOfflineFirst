@@ -1,0 +1,92 @@
+---
+description: Guardrails de Code Review (Clean Architecture, Compose, Room offline-first, WorkManager) para o DeliveryOfflineFirst
+globs: app/src/**/*.kt, app/schemas/**/*.json, app/build.gradle.kts, gradle/libs.versions.toml
+alwaysApply: false
+---
+
+# Android Code Review — DeliveryOfflineFirst
+
+Base package: `br.com.ccortez.deliveryofflinefirst`. Módulo único `:app`, camadas separadas por pacote:
+`domain/` (model, repository, nlp) · `data/` (local, repository, worker) · `presentation/` (screen, viewmodel) · `di/` · `navigation/` · `ui/theme/`.
+Branch base de comparação: **`master`** (não existe `main`). Use `git diff master...HEAD`.
+
+## Severidade
+- **BLOQUEADOR**: viola regra MUST/NEVER abaixo. PR não pode ser aprovado.
+- **RISCO**: pode causar bug, perda de dados ou regressão de performance. Exige justificativa.
+- **SUGESTÃO**: melhoria opcional.
+
+Todo achado DEVE citar `arquivo:linha`, a regra violada e a correção proposta.
+
+---
+
+## 1. Clean Architecture & Modularização
+
+- NEVER importar `android.*`, `androidx.*` (Room, Compose, WorkManager, DataStore, Lifecycle) nem `dagger/hilt` em `domain/**`. O domínio só usa Kotlin stdlib, `kotlinx.coroutines` e `kotlinx.coroutines.flow`.
+- NEVER expor `*Entity` (Room) ou DTOs de rede fora de `data/`. O mapeamento Entity <-> `domain.model` ocorre em `data/repository` (ex.: `EntregaRepositoryImpl`).
+- `domain/repository/*` são apenas interfaces; implementações ficam em `data/repository/*Impl` e são ligadas via Hilt em `di/AppModule.kt`.
+- `presentation/**` depende apenas de `domain/**`. NEVER acessar `AppDatabase`, `EntregaDao` ou `*Impl` diretamente de ViewModel ou Composable.
+- `data/**` NEVER depende de `presentation/**`.
+- ViewModels NEVER recebem `Context`/`Activity`. Use `@ApplicationContext` apenas em `data/` ou `di/`.
+- Novos use cases/repositórios devem ter KDoc descrevendo contrato (como em `AnalyticsRepository`).
+- Se o projeto for modularizado: `:domain` deve ser módulo `kotlin("jvm")` puro; um `import android.*` quebra o build e é BLOQUEADOR.
+
+## 2. Jetpack Compose
+
+- **State hoisting**: composables de tela recebem `state` e lambdas de evento; NEVER chamam repositório/ViewModel em composables de componente. Só o composable de rota (`*Screen` top-level) obtém o ViewModel.
+- **Stateless**: composables reutilizáveis não guardam estado de negócio. `remember`/`rememberSaveable` somente para estado puramente de UI (scroll, foco, expansão).
+- Todo composable público aceita `modifier: Modifier = Modifier` como primeiro parâmetro opcional.
+- **LazyColumn/LazyRow/LazyVerticalGrid**: `items(list, key = { it.id })` é OBRIGATÓRIO (BLOQUEADOR sem `key`). Para `items` com índice, também fornecer `contentType` quando houver tipos heterogêneos.
+- **UiState**: classe `data class` com `val` e coleções imutáveis (`List`, `Map`; preferir `ImmutableList`/`@Immutable`/`@Stable` quando o compilador reportar instabilidade). NEVER `var`, `MutableList` ou `MutableStateFlow` expostos.
+- ViewModel expõe `StateFlow<UiState>` via `asStateFlow()` e é coletado na UI com `collectAsStateWithLifecycle()` (NEVER `collectAsState()` para fluxos de longa duração).
+- Eventos one-shot (navegação, snackbar) via `Channel`/`SharedFlow` ou evento consumido no estado; NEVER no `UiState` sem consumo explícito.
+- **Recomposição**:
+  - NEVER alocar objetos/lambdas instáveis em corpo de composable sem `remember`; derivar com `remember(key)`/`derivedStateOf`.
+  - NEVER ler estado de alta frequência (scroll, animação) no corpo do composable pai; use lambdas (`Modifier.graphicsLayer {}`, `offset {}`) ou `derivedStateOf`.
+  - NEVER ordenar/filtrar/mapear listas dentro de composable; faça no ViewModel.
+  - Lambdas de evento passadas a itens de lista devem ser estáveis (referência a método do ViewModel ou `remember`).
+- Efeitos: `LaunchedEffect(key)` com chave correta; NEVER `LaunchedEffect(Unit)` que captura valores mutáveis sem `rememberUpdatedState`.
+- Strings visíveis em `strings.xml` (não hard-coded). `@Preview` para novos componentes.
+
+## 3. Room & Offline-First
+
+- NEVER `fallbackToDestructiveMigration()` (nem `...OnDowngrade`/`...DropAllTables`). Dados offline não entregues seriam perdidos. BLOQUEADOR.
+- Toda mudança em `@Entity`/`@Database` MUST: (a) incrementar `version` em `AppDatabase`; (b) adicionar `Migration(old, new)` registrada em `addMigrations(...)`; (c) manter `exportSchema = true` e commitar o JSON gerado em `app/schemas/<db>/<version>.json`; (d) incluir teste de migração com `MigrationTestHelper`.
+- Migrations: SQL explícito, `NOT NULL` com `DEFAULT`, sem DROP de dados do usuário; `CREATE INDEX` correspondente ao `@Index` da entidade (nome `index_<tabela>_<coluna>`).
+- Toda coluna de chave estrangeira MUST ter `@Index` (`indices = [Index("entregaId")]`) e `onDelete` explícito. BLOQUEADOR se ausente.
+- **Outbox / sincronização pendente**: toda escrita local originada pelo usuário MUST persistir com `sincronizada = false` (em `EntregaEntity`) na MESMA transação da mudança. Só `marcarSincronizada*` após ACK do servidor. NEVER marcar `sincronizada = true` antes da confirmação.
+- Toda entidade sincronizável MUST ter um identificador gerado no cliente (`uuid`) usado como idempotency key.
+- DAO: operações multi-tabela em `@Transaction`; queries reativas retornam `Flow`; operações de escrita são `suspend`. NEVER acessar DAO na main thread (`allowMainThreadQueries` é proibido).
+- Relações usam `@Embedded`/`@Relation` (ver `EntregaComProdutosEntity`); NEVER N+1 queries em loops.
+- `PrimaryKey` estável; NEVER usar `autoGenerate` em entidade que precisa de merge offline sem estratégia de resolução de conflito documentada.
+
+## 4. WorkManager & Background Sync
+
+- Workers (`SyncWorker`, `@HiltWorker` + `CoroutineWorker`) MUST ser **idempotentes**: reexecução após crash NÃO pode duplicar efeitos. Enviar com idempotency key (`uuid`) e processar cada item individualmente, marcando-o sincronizado só após ACK.
+- Toda `WorkRequest` MUST declarar `Constraints` com `setRequiredNetworkType(NetworkType.CONNECTED)`.
+- Toda `WorkRequest` de sync MUST declarar `setBackoffCriteria(BackoffPolicy.EXPONENTIAL, <>=10s, TimeUnit.SECONDS)`.
+- Retorno de `doWork()`: `Result.retry()` para falhas transitórias (rede/5xx); `Result.failure()` para erros permanentes (4xx de validação); NEVER engolir exceção retornando `success()`. Limitar tentativas com `runAttemptCount`.
+- Enfileirar com `enqueueUniqueWork(name, ExistingWorkPolicy.KEEP|REPLACE, request)` para evitar jobs duplicados. NEVER `enqueue()` simples para sync.
+- NEVER lógica de simulação (`Random`, `delay` falso) em código de produção; isolar em fake/`BuildConfig.DEBUG`/DI.
+- NEVER `Log.*` com dados pessoais (cliente, endereço). Usar Timber/`BuildConfig.DEBUG` e logar apenas IDs.
+- Workers NEVER dependem de `presentation/**`; só de interfaces de `domain/repository`.
+
+## 5. Segurança & Qualidade Gerais
+
+- Segredos (API keys, tokens Gemini/Firebase) NEVER em código-fonte ou `strings.xml`; usar `local.properties`/`BuildConfig`/Secrets Gradle Plugin. `local.properties` e `google-services.json` com chaves reais NEVER commitados.
+- Coroutines: injetar `CoroutineDispatcher`; NEVER `GlobalScope`; ViewModel usa `viewModelScope`; I/O em `Dispatchers.IO` (ou `withContext` via dispatcher injetado). Capturar `CancellationException` e relançar.
+- NLP/IA (`NlpRepositoryImpl`): saída do LLM é entrada NÃO CONFIÁVEL; validar/parsear defensivamente antes de tocar o banco; NEVER executar comando destrutivo sem confirmação.
+- Alterações de comportamento exigem testes (unit em `app/src/test`, instrumentados em `app/src/androidTest`).
+
+## Formato obrigatório do relatório de review
+
+```
+# Pull Request Review — <branch> vs master
+**Resumo**: <1-3 linhas>
+## 🚫 Bloqueadores  (arquivo:linha — regra — correção)
+## ⚠️ Riscos
+## 💡 Sugestões
+## ✅ Pontos positivos
+## Veredito: APROVADO | APROVADO COM RESSALVAS | MUDANÇAS SOLICITADAS
+```
+
+Sem achados em uma seção, escreva "Nenhum". NEVER aprovar com Bloqueadores abertos.
