@@ -2227,6 +2227,32 @@ This makes the test robust against coroutine scheduling — it never asserts on 
 
 ---
 
+### Runtime Resilience & DevEx: Android Debug Bridge (ADB) MCP Pipeline
+
+Cursor drives a live emulator through [`android-debug-bridge-mcp@2.1.0`](https://www.npmjs.com/package/android-debug-bridge-mcp) (stdio). The server shells out to `adb` and targets `br.com.ccortez.deliveryofflinefirst`. Instrumented tests remain the regression gate. This pass is fault injection on a debug build (`installDebug`, so `run-as` can read Room).
+
+```
+Cursor Agent
+  stdio — android-debug-bridge-mcp@2.1.0 (`cmd /c npx` on Windows)
+        │
+        ▼
+adb.exe  →  AVD
+        │
+        ▼
+br.com.ccortez.deliveryofflinefirst
+  Room entregas.db  ·  WorkManager sync_entregas  ·  Logcat
+```
+
+| Scenario | Probe | Acceptance |
+|---|---|---|
+| Process death | HOME, then `am kill br.com.ccortez.deliveryofflinefirst`, then `am start -n br.com.ccortez.deliveryofflinefirst/.MainActivity`. `pidof` must be empty before the start. | The delivery list returns from Room (`observarTodas()` → `EntregasUiState`), the reactive single source of truth. `searchQuery` is a ViewModel `StateFlow`: it survives rotation and is empty after process death. `rememberSaveable` restores the quick-note field (`campo_not_lived_in_viewmodel`) from the `SavedStateRegistry`. |
+| Outbox and network fault | `svc wifi disable`. On an AVD, `eth0` often stays up — confirm with connectivity state and enable airplane mode when a validated route remains. | A concluded delivery is `sincronizada = 0` in SQLite (`entrega`). `SyncWorker` runs only under `NetworkType.CONNECTED`, with exponential backoff from 30s and `ExistingWorkPolicy.KEEP`. The built-in 30% failure logs `Simulated network failure — scheduling retry` and leaves the row at `0` until ACK. |
+| Logcat triage | `logcat` limited to `DEBUG_OFFLINE_FIRST`, `Room`, `SQLiteLog`, `WM-WorkerWrapper`, and `SyncWorker`. | `DEBUG_OFFLINE_FIRST` is `EntregasViewModel` (plus Remote Config and Analytics). Room and `SyncWorker` map to `EntregaDao` / `AppDatabase` and `data/worker/SyncWorker.kt`. A `DEBUG_OFFLINE_FIRST` line on every `RESUMED` is `reloadRemoteConfig`, not a recomposition loop. |
+
+`am kill` is the process-death probe: the activity is stopped first, so the system has already written saved state. The runbook, the Windows `mcp.json` snippet, and the expected-versus-audited table are in [`docs/adb-mcp-runtime-audit.md`](docs/adb-mcp-runtime-audit.md). The agent protocol is [`.cursor/rules/adb-runtime-testing.mdc`](.cursor/rules/adb-runtime-testing.mdc).
+
+---
+
 ## Key dependency versions
 
 | Library | Version |

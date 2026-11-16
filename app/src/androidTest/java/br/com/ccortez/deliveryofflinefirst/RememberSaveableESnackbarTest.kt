@@ -20,6 +20,8 @@ import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
 import br.com.ccortez.deliveryofflinefirst.fake.FakeAnalyticsRepository
+import br.com.ccortez.deliveryofflinefirst.fake.FakeSyncScheduler
+import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncScheduler
 import br.com.ccortez.deliveryofflinefirst.fake.FakeEntregaRepository
 import br.com.ccortez.deliveryofflinefirst.fake.FakeNlpRepository
 import br.com.ccortez.deliveryofflinefirst.fake.FakeRemoteConfigRepository
@@ -108,6 +110,10 @@ class RememberSaveableESnackbarTest {
         @Provides
         @Singleton
         fun provideAnalyticsRepository(): AnalyticsRepository = FakeAnalyticsRepository()
+
+        @Provides
+        @Singleton
+        fun provideSyncScheduler(): SyncScheduler = FakeSyncScheduler()
     }
 
     // ── Setup ──────────────────────────────────────────────────────────────────

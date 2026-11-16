@@ -30,6 +30,22 @@ Todo achado DEVE citar `arquivo:linha`, a regra violada e a correção proposta.
 - Novos use cases/repositórios devem ter KDoc descrevendo contrato (como em `AnalyticsRepository`).
 - Se o projeto for modularizado: `:domain` deve ser módulo `kotlin("jvm")` puro; um `import android.*` quebra o build e é BLOQUEADOR.
 
+## 1b. SOLID — somente S (responsabilidade única)
+
+Um tipo tem um motivo para mudar. Severidade padrão: **RISCO** (não bloqueia o merge). Código anterior ao diff só é citado se o PR o piora.
+
+- **ViewModel** (`presentation/viewmodel`): só estado de tela e eventos de UI (lista, busca, snackbar, delegar conclusão/conferência ao repositório).
+  - NEVER dados de seed (listas de `Entrega`/`ItemPedido` de demonstração) no ViewModel. Seed fica em `data/`.
+  - NEVER montar `WorkRequest`, `Constraints` ou chamar `WorkManager` no ViewModel. Agendamento fica numa classe de `data/` (ex.: `SyncScheduler`).
+  - NEVER um `when (NlpAction)` que executa busca, conclusão, conferência e analytics no mesmo método. Um handler por ação; o ViewModel só despacha.
+- **Worker** (`data/worker`): `doWork()` só drena o outbox (ler pendentes, enviar, marcar sincronizado, registrar analytics de sync).
+  - NEVER simular rede no worker de produção (`delay` fictício, `Random` de falha). Simulação fica em fake ou atrás de `BuildConfig.DEBUG`.
+- **Contrato vs implementação**: ViewModel NEVER referencia constante de `*Impl` (ex.: `AnalyticsRepositoryImpl.ACTION_*`). Constante usada pela UI mora em `domain`.
+- **Limite prático**: classe nova ou método alterado com dois motivos de mudança (UI + persistência, UI + agendamento, sync + simulação de rede) é RISCO e deve indicar o tipo que passaria a dono do segundo motivo.
+- NÃO aplicar S como bloqueador por tamanho de arquivo, número de métodos ou complexidade ciclomática.
+
+Formato do achado: `arquivo:linha` — motivo de mudança extra — tipo sugerido para extraí-lo.
+
 ## 2. Jetpack Compose
 
 - **State hoisting**: composables de tela recebem `state` e lambdas de evento; NEVER chamam repositório/ViewModel em composables de componente. Só o composable de rota (`*Screen` top-level) obtém o ViewModel.

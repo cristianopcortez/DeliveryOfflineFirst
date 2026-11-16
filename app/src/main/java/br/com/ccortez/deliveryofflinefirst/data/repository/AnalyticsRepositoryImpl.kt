@@ -2,6 +2,7 @@ package br.com.ccortez.deliveryofflinefirst.data.repository
 
 import android.os.Bundle
 import android.util.Log
+import br.com.ccortez.deliveryofflinefirst.domain.analytics.AnalyticsEvents
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import com.google.firebase.analytics.FirebaseAnalytics
 
@@ -62,13 +63,12 @@ class AnalyticsRepositoryImpl(
         const val USER_PROP_NLP_ENABLED = "nlp_feature_enabled"
 
         // Trigger values
-        const val TRIGGER_INIT          = "init"
-        const val TRIGGER_RESUME        = "resume"
-        const val TRIGGER_MANUAL_RELOAD = "manual_reload"
+        const val TRIGGER_INIT = AnalyticsEvents.TRIGGER_INIT
+        const val TRIGGER_RESUME = AnalyticsEvents.TRIGGER_RESUME
+        const val TRIGGER_MANUAL_RELOAD = AnalyticsEvents.TRIGGER_MANUAL_RELOAD
 
-        // Action values (for logNlpCommandResult)
-        const val ACTION_SET_SEARCH_QUERY  = "set_search_query"
-        const val ACTION_CONCLUDE_DELIVERY = "conclude_delivery"
-        const val ACTION_UNKNOWN           = "unknown"
+        const val ACTION_SET_SEARCH_QUERY = AnalyticsEvents.ACTION_SET_SEARCH_QUERY
+        const val ACTION_CONCLUDE_DELIVERY = AnalyticsEvents.ACTION_CONCLUDE_DELIVERY
+        const val ACTION_UNKNOWN = AnalyticsEvents.ACTION_UNKNOWN
     }
 }

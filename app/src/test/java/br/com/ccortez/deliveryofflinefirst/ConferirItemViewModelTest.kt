@@ -1,8 +1,8 @@
 package br.com.ccortez.deliveryofflinefirst
 
-import androidx.test.core.app.ApplicationProvider
-import androidx.work.WorkManager
-import androidx.work.testing.WorkManagerTestInitHelper
+import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncEstado
+import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncScheduler
+import kotlinx.coroutines.flow.flowOf
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpCommand
 import br.com.ccortez.deliveryofflinefirst.fake.FakeAnalyticsRepositoryForTest
@@ -66,9 +66,6 @@ class ConferirItemViewModelTest {
     fun setUp() {
         Dispatchers.setMain(testDispatcher)
 
-        val context = ApplicationProvider.getApplicationContext<android.app.Application>()
-        WorkManagerTestInitHelper.initializeTestWorkManager(context)
-
         fakeRepo = FakeEntregaRepositoryForTest()
         fakeNlp = FakeNlpRepositoryForTest()
 
@@ -77,7 +74,10 @@ class ConferirItemViewModelTest {
             nlpRepository       = fakeNlp,
             remoteConfigRepository = FakeRemoteConfigRepositoryForTest(),
             analyticsRepository = FakeAnalyticsRepositoryForTest(),
-            context             = context
+            syncScheduler       = object : SyncScheduler {
+                override fun agendar() = Unit
+                override fun observarEstado() = flowOf<SyncEstado?>(null)
+            }
         )
     }
 

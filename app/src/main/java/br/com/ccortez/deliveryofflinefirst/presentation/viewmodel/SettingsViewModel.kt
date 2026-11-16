@@ -2,7 +2,7 @@ package br.com.ccortez.deliveryofflinefirst.presentation.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import br.com.ccortez.deliveryofflinefirst.data.repository.AnalyticsRepositoryImpl
+import br.com.ccortez.deliveryofflinefirst.domain.analytics.AnalyticsEvents
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.SettingsRepository
@@ -76,7 +76,7 @@ class SettingsViewModel @Inject constructor(
             analyticsRepository.setNlpFeatureUserProperty(nlpEnabled)
             analyticsRepository.logNlpConfigFetched(
                 nlpEnabled = nlpEnabled,
-                trigger = AnalyticsRepositoryImpl.TRIGGER_MANUAL_RELOAD
+                trigger = AnalyticsEvents.TRIGGER_MANUAL_RELOAD
             )
             val status = if (nlpEnabled) "enabled" else "disabled"
             _eventos.emit(SettingsEvent.ShowSnackbar("Remote Config updated — NLP is $status"))

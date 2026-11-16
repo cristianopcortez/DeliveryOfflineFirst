@@ -32,6 +32,9 @@ interface EntregaRepository {
      * or none. Returns false (and writes nothing) if the database already has deliveries.
      */
     suspend fun semearSeVazio(entregas: List<Entrega>, itens: Map<String, List<ItemPedido>>): Boolean
+
+    /** Seeds the demo catalog when the database is empty. The catalog itself stays in the data layer. */
+    suspend fun semearDemonstracaoSeVazio(): Boolean
     suspend fun marcarSincronizadaPorUuid(uuid: String)
     suspend fun marcarTodasSincronizadas()
 

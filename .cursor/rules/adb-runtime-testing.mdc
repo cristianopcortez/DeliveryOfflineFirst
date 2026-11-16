@@ -1,0 +1,51 @@
+---
+description: Protocolo de diagnóstico em runtime do DeliveryOfflineFirst no emulador via ADB MCP — process death, outbox offline e triagem de logcat.
+alwaysApply: false
+---
+
+# Diagnóstico em runtime — DeliveryOfflineFirst
+
+Aplicar ao inspecionar o emulador, simular process death, cortar rede ou ler logcat. Identidade do processo: `br.com.ccortez.deliveryofflinefirst`. Activity: `.MainActivity`. Banco: `databases/entregas.db`, tabela `entrega`, coluna `sincronizada`. Trabalho único do WorkManager: `sync_entregas` (`SyncWorker`, `NetworkType.CONNECTED`, `ExistingWorkPolicy.KEEP`, backoff exponencial de 30s).
+
+Servidor MCP: `android-debug-bridge` (`android-debug-bridge-mcp`). Primeiro `list_devices`. Com mais de um alvo, passar `device` em toda chamada. Build de auditoria: `installDebug` (debuggable, `run-as` permitido).
+
+## Processo
+
+1. `clear_logcat` antes do cenário.
+2. Registrar o fato observado (PID, linha SQL, estado do job, tag de log). Ausência de dispositivo encerra o cenário.
+3. `clear_app_data` apaga o outbox. `stop_app` e `am force-stop` marcam o pacote como parado e descartam a restauração do `SavedStateRegistry`. O cenário de process death usa `adb_shell` com `am kill` depois do app ir para background.
+
+## A — Process death
+
+O `EntregasUiState` é `StateFlow` alimentado por `observarTodas()` no Room. Não há `SavedStateHandle` no `EntregasViewModel`. A lista volta do banco. `searchQuery` vive só no ViewModel: sobrevive a `recreate()` e se perde no process death. `Anotação rápida` (`rememberSaveable`, tag `campo_not_lived_in_viewmodel`) volta pelo `SavedStateRegistry` se o `onSaveInstanceState` já tiver corrido.
+
+```text
+input_keyevent KEYCODE_HOME
+adb_shell am kill br.com.ccortez.deliveryofflinefirst
+adb_shell pidof br.com.ccortez.deliveryofflinefirst
+adb_shell am start -n br.com.ccortez.deliveryofflinefirst/.MainActivity
+```
+
+`am kill` só encerra processo em cache. PID ainda presente significa que o kill não ocorreu: repetir o HOME e o `am kill`. Aceite: linhas de `entrega` iguais às de antes do kill; lista recomposta a partir do Room; anotação rápida restaurada; `campo_busca` vazio; snackbar de `SharedFlow` sem replay.
+
+## B — Outbox e rede
+
+`toggle_wifi` (`svc wifi`) no AVD deixa `eth0` de pé. Confirmar queda com `get_connectivity_state` e, se a rota continuar válida, `toggle_airplane_mode`. Sem conectividade validada, `SyncWorker` não drena.
+
+Consulta no debug:
+
+```text
+adb exec-out run-as br.com.ccortez.deliveryofflinefirst cat databases/entregas.db
+```
+
+Copiar também `entregas.db-wal` e `entregas.db-shm` quando existirem. Critério SQL: `SELECT id, cliente, sincronizada FROM entrega WHERE sincronizada = 0`. A semente `seed-4` (Maria Souza) já nasce com `sincronizada = 0`. Concluir outra entrega offline grava `sincronizada = 0` em `concluirEntrega`. Com rede indisponível o job `sync_entregas` permanece restrito (`dumpsys jobscheduler`). Ao restabelecer a rede, o log aceita um dos dois desfechos do contrato: `Sync complete` com `sincronizada = 1`, ou `Simulated network failure — scheduling retry` com a linha ainda em `0` e novo agendamento. Falha aleatória de 30% é comportamento do worker, não perda de outbox.
+
+## C — Logcat
+
+`read_logcat` filtra por substring. Para tags simultâneas, usar `adb_shell`:
+
+```text
+logcat -d -v brief DEBUG_OFFLINE_FIRST:D SyncWorker:D Room:W SQLiteLog:W WM-WorkerWrapper:I WM-Processor:I FirebaseAppCheck:W DebugAppCheckProvider:D *:S
+```
+
+`EntregasViewModel` loga em `DEBUG_OFFLINE_FIRST`, o mesmo tag de Remote Config e Analytics. `reloadRemoteConfig` em todo `RESUMED` é ciclo de vida, não recomposição. Pressão de frame: `Choreographer` com frames pulados. Exceções silenciosas: prioridade `W`/`E` nessas tags, em especial `Unexpected error during sync` e falha de App Check (`DebugAppCheckProvider` sem token em `local.properties`).
