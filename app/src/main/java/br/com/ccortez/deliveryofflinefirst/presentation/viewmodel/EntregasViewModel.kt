@@ -3,18 +3,16 @@ package br.com.ccortez.deliveryofflinefirst.presentation.viewmodel
 import br.com.ccortez.deliveryofflinefirst.domain.analytics.AnalyticsEvents
 import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
 import br.com.ccortez.deliveryofflinefirst.domain.model.ResultadoConclusao
+import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.domain.repository.AnalyticsRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.EntregaRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.NlpRepository
 import br.com.ccortez.deliveryofflinefirst.domain.repository.RemoteConfigRepository
 import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncEstado
 import br.com.ccortez.deliveryofflinefirst.domain.sync.SyncScheduler
-import br.com.ccortez.deliveryofflinefirst.presentation.nlp.ConcludeDeliveryHandler
-import br.com.ccortez.deliveryofflinefirst.presentation.nlp.ConferirItemHandler
+import br.com.ccortez.deliveryofflinefirst.presentation.nlp.NlpActionHandler
 import br.com.ccortez.deliveryofflinefirst.presentation.nlp.NlpCommandHost
 import br.com.ccortez.deliveryofflinefirst.presentation.nlp.NlpCommandRouter
-import br.com.ccortez.deliveryofflinefirst.presentation.nlp.SetSearchQueryHandler
-import br.com.ccortez.deliveryofflinefirst.presentation.nlp.UnknownCommandHandler
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -44,7 +42,8 @@ class EntregasViewModel @Inject constructor(
     private val nlpRepository: NlpRepository,
     private val remoteConfigRepository: RemoteConfigRepository,
     private val analyticsRepository: AnalyticsRepository,
-    private val syncScheduler: SyncScheduler
+    private val syncScheduler: SyncScheduler,
+    nlpHandlers: Map<NlpAction, @JvmSuppressWildcards NlpActionHandler>
 ) : ViewModel(), NlpCommandHost {
 
     // Screen state — single source of truth for loading, error, and the full list (used by the dropdown)
@@ -84,14 +83,7 @@ class EntregasViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
-    private val nlpRouter = NlpCommandRouter(
-        listOf(
-            SetSearchQueryHandler(),
-            ConcludeDeliveryHandler(),
-            ConferirItemHandler(),
-            UnknownCommandHandler()
-        )
-    )
+    private val nlpRouter = NlpCommandRouter(nlpHandlers)
 
     val syncStatus: StateFlow<SyncEstado?> = syncScheduler.observarEstado()
         .stateIn(

@@ -9,6 +9,10 @@ import br.com.ccortez.deliveryofflinefirst.fake.FakeAnalyticsRepositoryForTest
 import br.com.ccortez.deliveryofflinefirst.fake.FakeEntregaRepositoryForTest
 import br.com.ccortez.deliveryofflinefirst.fake.FakeNlpRepositoryForTest
 import br.com.ccortez.deliveryofflinefirst.fake.FakeRemoteConfigRepositoryForTest
+import br.com.ccortez.deliveryofflinefirst.presentation.nlp.ConcludeDeliveryHandler
+import br.com.ccortez.deliveryofflinefirst.presentation.nlp.ConferirItemHandler
+import br.com.ccortez.deliveryofflinefirst.presentation.nlp.SetSearchQueryHandler
+import br.com.ccortez.deliveryofflinefirst.presentation.nlp.UnknownCommandHandler
 import br.com.ccortez.deliveryofflinefirst.presentation.viewmodel.EntregasEvent
 import br.com.ccortez.deliveryofflinefirst.presentation.viewmodel.EntregasViewModel
 import kotlinx.coroutines.Dispatchers
@@ -77,7 +81,13 @@ class ConferirItemViewModelTest {
             syncScheduler       = object : SyncScheduler {
                 override fun agendar() = Unit
                 override fun observarEstado() = flowOf<SyncEstado?>(null)
-            }
+            },
+            nlpHandlers         = mapOf(
+                NlpAction.SET_SEARCH_QUERY to SetSearchQueryHandler(),
+                NlpAction.CONCLUDE_DELIVERY to ConcludeDeliveryHandler(),
+                NlpAction.CONFERIR_ITEM to ConferirItemHandler(),
+                NlpAction.UNKNOWN to UnknownCommandHandler()
+            )
         )
     }
 
