@@ -46,6 +46,23 @@ Um tipo tem um motivo para mudar. Severidade padrão: **RISCO** (não bloqueia o
 
 Formato do achado: `arquivo:linha` — motivo de mudança extra — tipo sugerido para extraí-lo.
 
+## 1c. SOLID — O (aberto/fechado)
+
+Aberto para extensão, fechado para modificação. Severidade padrão: **RISCO** (não bloqueia o merge). Código anterior ao diff só é citado se o PR o piora.
+
+Um conjunto aberto é uma família de variantes que o produto espera crescer: ação de NLP, rota do orquestrador, estratégia de domínio. A variante nova entra por um tipo novo e, no grafo Hilt, por um binding novo.
+
+- NEVER, para acomodar a variante, editar um `when`, um `if/else` ou uma lista que instancia as implementações já existentes.
+- **Não é achado**: `when` exaustivo sobre tipo selado, ou sobre enum fechado de UI/sync (`EntregasEvent`, `ResultadoConclusao`, `SyncEstado`, `WorkInfo.State`, cardinalidade 0/1/muitos). O compilador já exige o ramo.
+- **Despacho de NLP** (`presentation/nlp`, `presentation/viewmodel`): a ação nova é uma classe `NlpActionHandler` mais um `@Binds @IntoMap @NlpActionKey` em `di/`. O ViewModel recebe `Map<NlpAction, NlpActionHandler>` e não lista handlers. `NlpCommandRouter` não ganha ramo por ação.
+- **Contrato com o modelo**: a constante em `NlpAction` e o texto em `NlpPrompts` são o schema que o LLM emite. Esse par acompanha a ação nova e não substitui o binding. NEVER voltar a despachar a ação com `when (NlpAction)` no ViewModel.
+- **Rota do orquestrador** (`data/repository/NlpRepositoryImpl`): rota nova que só aparece como braço de `when (route)` é RISCO. A rota nova é um worker registrado, sem editar o despacho.
+- **Estratégia de domínio**: regra nova que só existe como braço colado num `if/else` compartilhado é RISCO; a estratégia vira um tipo injetado numa coleção.
+- O filtro único de `entregasFiltradas` e o predicado local de um handler não são registro de estratégias.
+- NÃO aplicar O como bloqueador pela mera existência de um `when`.
+
+Formato do achado: `arquivo:linha` — conjunto aberto que o diff passou a editar — tipo ou binding que passa a ser o ponto de extensão.
+
 ## 2. Jetpack Compose
 
 - **State hoisting**: composables de tela recebem `state` e lambdas de evento; NEVER chamam repositório/ViewModel em composables de componente. Só o composable de rota (`*Screen` top-level) obtém o ViewModel.
