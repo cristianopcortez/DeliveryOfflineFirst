@@ -4,6 +4,7 @@ import br.com.ccortez.deliveryofflinefirst.domain.analytics.AnalyticsEvents
 import br.com.ccortez.deliveryofflinefirst.domain.model.EntregaComProdutos
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpAction
 import br.com.ccortez.deliveryofflinefirst.domain.nlp.NlpCommand
+import javax.inject.Inject
 
 /** What one NLP action is allowed to do. The ViewModel supplies the host and does not branch on the action. */
 interface NlpCommandHost {
@@ -21,9 +22,18 @@ interface NlpActionHandler {
 }
 
 class NlpCommandRouter(
-    handlers: List<NlpActionHandler>
+    private val porAcao: Map<NlpAction, NlpActionHandler>
 ) {
-    private val porAcao = handlers.associateBy { it.action }
+    init {
+        porAcao.forEach { (acao, handler) ->
+            require(handler.action == acao) {
+                "Handler ${handler::class.simpleName} is bound as $acao but declares ${handler.action}."
+            }
+        }
+        require(NlpAction.UNKNOWN in porAcao) {
+            "The handler map must contain NlpAction.UNKNOWN."
+        }
+    }
 
     suspend fun despachar(command: NlpCommand, host: NlpCommandHost) {
         val handler = porAcao[command.action] ?: porAcao.getValue(NlpAction.UNKNOWN)
@@ -31,7 +41,7 @@ class NlpCommandRouter(
     }
 }
 
-class SetSearchQueryHandler : NlpActionHandler {
+class SetSearchQueryHandler @Inject constructor() : NlpActionHandler {
     override val action = NlpAction.SET_SEARCH_QUERY
     override suspend fun handle(command: NlpCommand, host: NlpCommandHost) {
         command.searchTerm?.let(host::aplicarBusca)
@@ -39,7 +49,7 @@ class SetSearchQueryHandler : NlpActionHandler {
     }
 }
 
-class ConcludeDeliveryHandler : NlpActionHandler {
+class ConcludeDeliveryHandler @Inject constructor() : NlpActionHandler {
     override val action = NlpAction.CONCLUDE_DELIVERY
     override suspend fun handle(command: NlpCommand, host: NlpCommandHost) {
         val entrega = host.entregas().firstOrNull {
@@ -55,7 +65,7 @@ class ConcludeDeliveryHandler : NlpActionHandler {
     }
 }
 
-class ConferirItemHandler : NlpActionHandler {
+class ConferirItemHandler @Inject constructor() : NlpActionHandler {
     override val action = NlpAction.CONFERIR_ITEM
     override suspend fun handle(command: NlpCommand, host: NlpCommandHost) {
         val targetItem = command.targetItem
@@ -102,7 +112,7 @@ class ConferirItemHandler : NlpActionHandler {
     }
 }
 
-class UnknownCommandHandler : NlpActionHandler {
+class UnknownCommandHandler @Inject constructor() : NlpActionHandler {
     override val action = NlpAction.UNKNOWN
     override suspend fun handle(command: NlpCommand, host: NlpCommandHost) {
         val msg = if (command.isError) {
