@@ -57,7 +57,17 @@ android {
     }
     sourceSets {
         // Exposes exported Room schemas to MigrationTestHelper in instrumented tests.
-        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+        getByName("androidTest") {
+            assets.srcDir("$projectDir/schemas")
+            // LSP contract tests (src/testCommon) run unmodified against both the
+            // Robolectric-backed unit test and the real on-device Room implementation.
+            java.srcDir("$projectDir/src/testCommon/java")
+            kotlin.srcDir("$projectDir/src/testCommon/java")
+        }
+        getByName("test") {
+            java.srcDir("$projectDir/src/testCommon/java")
+            kotlin.srcDir("$projectDir/src/testCommon/java")
+        }
     }
 }
 
