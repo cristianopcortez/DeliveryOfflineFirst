@@ -12,30 +12,33 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Test double for [EntregaRepository].
  *
- * Pre-seeded with one delivery that has **no items** — `EntregasViewModel.popularBancoSeVazio`
- * sees [contarEntregas] > 0 and skips inserting the production seed, so the fake data is
- * the only data in the test. Because the item list is empty, `todosItensConferidos` evaluates
- * to `true` via vacuous truth and the "Concluir Entrega" button is visible immediately —
- * no checkbox interaction needed.
+ * Default-constructed, it is pre-seeded with one delivery that has **no items** —
+ * `EntregasViewModel.popularBancoSeVazio` sees [contarEntregas] > 0 and skips inserting the
+ * production seed, so the fake data is the only data in the test. Because the item list is
+ * empty, `todosItensConferidos` evaluates to `true` via vacuous truth and the
+ * "Concluir Entrega" button is visible immediately — no checkbox interaction needed.
+ *
+ * [initialData] can be overridden (e.g. by `EntregaRepositoryContractTest`) to arrange a
+ * specific delivery/item state without touching the default used by the UI test suite.
  *
  * [concluirEntrega] updates the in-memory [MutableStateFlow] reactively, mirroring how the
  * real Room-backed implementation triggers a new Flow emission.
  */
-class FakeEntregaRepository : EntregaRepository {
-
-    private val _entregas = MutableStateFlow(
-        listOf(
-            EntregaComProdutos(
-                entrega = Entrega(
-                    id = "fake-1",
-                    cliente = "Cliente Fake",
-                    endereco = "Rua dos Testes, 1",
-                    status = "Pendente"
-                ),
-                itens = emptyList()
-            )
+class FakeEntregaRepository(
+    initialData: List<EntregaComProdutos> = listOf(
+        EntregaComProdutos(
+            entrega = Entrega(
+                id = "fake-1",
+                cliente = "Cliente Fake",
+                endereco = "Rua dos Testes, 1",
+                status = "Pendente"
+            ),
+            itens = emptyList()
         )
     )
+) : EntregaRepository {
+
+    private val _entregas = MutableStateFlow(initialData)
 
     override fun observarTodas(): Flow<List<EntregaComProdutos>> = _entregas.asStateFlow()
 
