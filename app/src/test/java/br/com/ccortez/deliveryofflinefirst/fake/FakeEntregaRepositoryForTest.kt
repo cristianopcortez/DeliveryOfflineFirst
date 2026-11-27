@@ -38,7 +38,20 @@ class FakeEntregaRepositoryForTest(
     override suspend fun inserirTodas(entregas: List<Entrega>) = Unit
     override suspend fun inserirItens(entregaId: String, itens: List<ItemPedido>) = Unit
     override suspend fun contarEntregas(): Int = _data.value.size
-    override suspend fun concluirEntrega(id: String): ResultadoConclusao = ResultadoConclusao.CONCLUIDA
+
+    /**
+     * LSP: honors the same invariant as [EntregaRepository.concluirEntrega] — NEVER concludes
+     * when any item is unchecked. Prior to this fix this fake unconditionally returned
+     * [ResultadoConclusao.CONCLUIDA], diverging from the production implementation
+     * (`EntregaRepositoryImpl`) and from the `androidTest` fake. See `EntregaRepositoryContractTest`.
+     */
+    override suspend fun concluirEntrega(id: String): ResultadoConclusao {
+        val alvo = _data.value.firstOrNull { it.entrega.id == id }
+            ?: return ResultadoConclusao.NAO_ENCONTRADA
+        if (alvo.itens.any { !it.conferido }) return ResultadoConclusao.ITENS_PENDENTES
+        return ResultadoConclusao.CONCLUIDA
+    }
+
     override suspend fun listarPendentes(): List<EntregaComProdutos> = emptyList()
     override suspend fun semearSeVazio(
         entregas: List<Entrega>,

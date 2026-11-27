@@ -63,6 +63,17 @@ Um conjunto aberto é uma família de variantes que o produto espera crescer: a�
 
 Formato do achado: `arquivo:linha` — conjunto aberto que o diff passou a editar — tipo ou binding que passa a ser o ponto de extensão.
 
+## 1d. SOLID — L (substituição de Liskov)
+
+Um subtipo deve honrar o contrato do tipo base: nunca reforçar pré-condições, nunca enfraquecer pós-condições/invariantes. Severidade: **BLOQUEADOR** quando a implementação de produção reforça pré-condição ou enfraquece invariante documentada; **RISCO** quando a divergência está só entre `Fake` de teste e implementação real.
+
+- NEVER usar `is`/`as` sobre `NlpActionHandler`, `*Repository` ou `SyncScheduler` para aplicar comportamento especial por subtipo fora do ponto de extensão já definido na seção 1c (handler/binding). Isso indica que o subtipo não é intercambiável com o contrato.
+- Implementação nova de `EntregaRepository`, `NlpRepository`, `RemoteConfigRepository` ou `SyncScheduler` NEVER lança exceção não documentada no KDoc do método da interface, nem adiciona `require`/pré-condição que a interface não promete (ex.: exigir rede quando o contrato não menciona).
+- Toda invariante documentada no KDoc da interface (ex.: `EntregaRepository.concluirEntrega` NEVER conclui com item pendente) MUST ser honrada por **toda** implementação, incluindo `Fakes` em `test/` e `androidTest/`. Fake que simplifica demais o comportamento (ex.: retorno fixo ignorando estado) e corrói a invariante é achado, mesmo sem afetar produção.
+- **Não é achado**: `when` exaustivo sobre `ResultadoConclusao`/`SyncEstado`/enum fechado (já coberto pela cláusula da seção 1c); fakes mais simples que o real que ainda preservam a mesma pós-condição/invariante (ex.: ignorar paginação quando a interface não a promete).
+
+Formato do achado: `arquivo:linha` — contrato da interface (`arquivo:linha` do KDoc) — pré/pós-condição violada — correção proposta (alinhar fake ou adicionar teste de contrato).
+
 ## 2. Jetpack Compose
 
 - **State hoisting**: composables de tela recebem `state` e lambdas de evento; NEVER chamam repositório/ViewModel em composables de componente. Só o composable de rota (`*Screen` top-level) obtém o ViewModel.
